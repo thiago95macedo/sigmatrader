@@ -1,0 +1,17 @@
+# Dependências principais
+# Usando cópia local da iqoptionapi em vez da versão do PyPI
+-e ./dependencias/iqoptionapi
+
+# Para exibir asteriscos na senha
+# Nota: estes módulos são usados apenas em sistemas específicos
+# No Windows: msvcrt (incluído na instalação padrão)
+# No Linux/Mac: termios, tty (incluídos na instalação padrão)
+
+# Dependências específicas da iqoptionapi
+requests>=2.24.0
+websocket-client==0.56.0
+python-dateutil>=2.8.1
+
+# Desenvolvimento e testes
+pytest>=6.0.0
+pylint>=2.5.0 

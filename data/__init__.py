@@ -15,6 +15,8 @@ from .database import (
     obter_saldos_conta,
     atualizar_saldos_conta,
     obter_id_conta_atual,
+    atualizar_perfil_conta_iq,
+    obter_perfil_conta_local,
 )
 
 __all__ = [
@@ -30,4 +32,6 @@ __all__ = [
     'obter_saldos_conta',
     'atualizar_saldos_conta',
     'obter_id_conta_atual',
+    'atualizar_perfil_conta_iq',
+    'obter_perfil_conta_local',
 ] 

@@ -9,6 +9,7 @@ import logging
 import time
 from datetime import datetime
 from iqoptionapi.stable_api import IQ_Option
+from data import atualizar_perfil_conta_iq # Importa a nova função
 
 # Configuração de logging
 logger = logging.getLogger(__name__)
@@ -27,115 +28,178 @@ class LoginIQOption:
         """Inicializa o gerenciador de login"""
         self.api = None
         self.email = None
-        self.tipo_conta = None
+        self.tipo_conta = None # Armazena o último tipo selecionado com sucesso
         self.saldo = 0.0
         self.moeda = None
         self.conectado = False
     
-    def conectar(self, email, senha, tipo_conta="TREINAMENTO"):
+    def conectar(self, email, senha, tipo_conta="TREINAMENTO", conta_id_db=None):
         """
-        Realiza o login na IQ Option
+        Realiza o login na IQ Option, tenta definir o tipo de conta inicial, 
+        e atualiza o perfil do usuário no banco de dados local.
         
         Parâmetros:
             email (str): Email da conta
             senha (str): Senha da conta
-            tipo_conta (str): REAL, TREINAMENTO ou TORNEIO
+            tipo_conta (str): REAL, TREINAMENTO ou TORNEIO (Tipo desejado para iniciar)
+            conta_id_db (int, optional): ID da conta no banco de dados local para atualização do perfil.
+                                         Se None, a atualização do perfil será pulada.
             
         Retorna:
             bool: True se o login foi bem-sucedido, False caso contrário
         """
         logger.info(f"Iniciando conexão com a IQ Option para o email: {email}")
         
-        # Normaliza o tipo de conta
-        if tipo_conta not in TIPO_CONTA:
-            logger.warning(f"Tipo de conta desconhecido: {tipo_conta}. Usando conta de TREINAMENTO.")
-            tipo_conta = "TREINAMENTO"
+        # Normaliza o tipo de conta desejado
+        tipo_conta_desejado = tipo_conta.upper() if isinstance(tipo_conta, str) else "TREINAMENTO"
+        if tipo_conta_desejado not in TIPO_CONTA:
+            logger.warning(f"Tipo de conta desconhecido: {tipo_conta_desejado}. Usando TREINAMENTO.")
+            tipo_conta_desejado = "TREINAMENTO"
         
         # Inicializa a conexão
         self.api = IQ_Option(email, senha)
         
         # Tenta conectar
+        logger.info("Tentando estabelecer conexão WebSocket...")
         status, motivo = self.api.connect()
         
         if status:
-            logger.info("Conexão estabelecida com sucesso!")
+            logger.info("Conexão WebSocket estabelecida com sucesso!")
             self.email = email
             self.conectado = True
+
+            # --- Atualização do Perfil no DB --- 
+            if conta_id_db is not None:
+                logger.info(f"Tentando obter perfil da API para atualizar DB (conta_id={conta_id_db})...")
+                try:
+                    # Chama o método da API para obter o perfil
+                    perfil_api = self.api.get_profile_ansyc() 
+                    
+                    if perfil_api and isinstance(perfil_api, dict):
+                        logger.debug(f"Perfil obtido da API: {perfil_api}") 
+                        # Tenta atualizar no banco de dados
+                        # A função atualizar_perfil_conta_iq lida com campos ausentes
+                        if atualizar_perfil_conta_iq(conta_id_db, perfil_api):
+                            logger.info("Perfil IQ Option atualizado com sucesso no banco de dados local.")
+                        else:
+                            # Log de erro já é feito dentro da função atualizar_perfil_conta_iq
+                            pass 
+                    else:
+                        logger.warning("Não foi possível obter dados válidos do perfil da API.")
+                        
+                except Exception as e_profile:
+                    logger.error(f"Erro ao obter ou processar perfil da API: {e_profile}", exc_info=True)
+            else:
+                 logger.warning("conta_id_db não fornecido. Pulando atualização do perfil no DB.")
+            # --- Fim da Atualização do Perfil --- 
             
-            # Altera para o tipo de conta desejado
-            self._selecionar_tipo_conta(tipo_conta)
-            
-            # Obtém informações da conta
-            self._atualizar_saldo()
-            
+            # Pequena pausa antes de tentar mudar/verificar conta
+            time.sleep(1)
+
+            # Tenta alterar para o tipo de conta desejado
+            if self._selecionar_tipo_conta(tipo_conta_desejado):
+                logger.info(f"Conta definida para {tipo_conta_desejado} após conexão.")
+            else:
+                logger.warning(f"Não foi possível definir conta para {tipo_conta_desejado}. Verificando conta ativa...")
+                self._atualizar_saldo() # Atualiza saldo da conta ativa
+                try:
+                     current_mode = self.api.get_balance_mode()
+                     logger.info(f"Modo de conta ativo obtido da API: {current_mode}")
+                     for nome, codigo in TIPO_CONTA.items():
+                         if codigo == current_mode: self.tipo_conta = nome; break
+                except Exception as e_mode: logger.error(f"Erro ao obter modo de conta ativo: {e_mode}")
+
+            logger.info(f"Conexão finalizada. Conta interna: {self.tipo_conta}, Saldo: {self.saldo} {self.moeda}")
             return True
         else:
-            logger.error(f"Falha na conexão: {motivo}")
+            logger.error(f"Falha na conexão WebSocket: {motivo}")
             self.conectado = False
             return False
     
     def _selecionar_tipo_conta(self, tipo_conta):
         """
-        Seleciona o tipo de conta a ser usada
+        Seleciona o tipo de conta a ser usada. Atualiza self.tipo_conta e self.saldo.
         
         Parâmetros:
             tipo_conta (str): REAL, TREINAMENTO ou TORNEIO
         
         Retorna:
-            bool: True se a mudança foi bem-sucedida, False caso contrário
+            bool: True se a mudança foi bem-sucedida e saldo atualizado, False caso contrário
         """
         if not self.conectado or not self.api:
-            logger.error("Não é possível selecionar tipo de conta sem estar conectado")
+            logger.error("Não conectado. Não é possível selecionar tipo de conta.")
             return False
         
-        # Normaliza o tipo de conta
-        tipo_conta = tipo_conta.upper() if isinstance(tipo_conta, str) else tipo_conta
+        # Normaliza o tipo de conta alvo
+        tipo_conta_alvo = tipo_conta.upper() if isinstance(tipo_conta, str) else "TREINAMENTO"
+        codigo_tipo_alvo = TIPO_CONTA.get(tipo_conta_alvo, "PRACTICE")
         
-        # Obtém o código do tipo de conta da API
-        codigo_tipo = TIPO_CONTA.get(tipo_conta, "PRACTICE")
-        
-        # Seleciona o tipo de conta
-        logger.info(f"Alterando para conta do tipo: {tipo_conta}")
-        
+        # Opcional: Verificar se já está na conta correta para evitar chamada desnecessária
         try:
-            resultado = self.api.change_balance(codigo_tipo)
+            current_mode_api = self.api.get_balance_mode()
+            if current_mode_api == codigo_tipo_alvo:
+                logger.info(f"Já está na conta {tipo_conta_alvo}. Apenas atualizando saldo.")
+                if self._atualizar_saldo(): # Garante que o saldo está atualizado
+                    self.tipo_conta = tipo_conta_alvo # Confirma o tipo interno
+                    return True
+                else:
+                    return False # Falha ao atualizar saldo
+        except Exception as e_mode:
+            logger.warning(f"Não foi possível verificar o modo de conta atual antes de mudar: {e_mode}")
+
+        # Tenta mudar a conta
+        logger.info(f"Tentando alterar para conta do tipo: {tipo_conta_alvo} (Código: {codigo_tipo_alvo})")
+        resultado_change = None
+        try:
+            resultado_change = self.api.change_balance(codigo_tipo_alvo)
+            logger.info(f"Resultado da chamada api.change_balance({codigo_tipo_alvo}): {resultado_change}")
             
-            if resultado:
-                self.tipo_conta = tipo_conta
-                logger.info(f"Tipo de conta alterado para: {tipo_conta}")
+            if resultado_change:
+                logger.info(f"API retornou sucesso ao tentar alterar para {tipo_conta_alvo}. Aguardando para atualizar saldo...")
+                time.sleep(1.5)  # Aumentar um pouco a pausa após a mudança bem-sucedida
                 
-                # Atualiza saldo após a mudança de conta
-                time.sleep(1)  # Pequena pausa para garantir que a API atualize
-                self._atualizar_saldo()
-                return True
+                # Tenta atualizar o saldo após a mudança
+                if self._atualizar_saldo():
+                    self.tipo_conta = tipo_conta_alvo # Define o tipo interno APÓS sucesso
+                    logger.info(f"Conta alterada e saldo atualizado com sucesso para: {tipo_conta_alvo}")
+                    return True
+                else:
+                    logger.error(f"Conta {tipo_conta_alvo} alterada, MAS FALHOU ao atualizar o saldo após a mudança.")
+                    # Mantém self.tipo_conta como None ou o anterior? Por segurança, None.
+                    self.tipo_conta = None 
+                    return False # Falha na operação completa
             else:
-                logger.error(f"Falha ao alterar para o tipo de conta: {tipo_conta}")
-                return False
+                logger.error(f"API retornou FALHA ao tentar alterar para o tipo de conta: {tipo_conta_alvo}")
+                return False # API rejeitou a mudança
+                
         except Exception as e:
-            logger.error(f"Erro ao alterar tipo de conta para {tipo_conta}: {e}")
+            logger.error(f"EXCEÇÃO ao tentar alterar tipo de conta para {tipo_conta_alvo}: {e}", exc_info=True)
+            logger.error(f"Valor retornado por change_balance antes da exceção (se houve): {resultado_change}")
             return False
     
     def _atualizar_saldo(self):
         """
-        Atualiza as informações de saldo da conta
-        
-        Retorna:
-            float: Saldo atual da conta
+        Atualiza as informações de saldo (self.saldo, self.moeda).
+        Retorna True se sucesso, False caso contrário.
         """
         if not self.conectado or not self.api:
-            logger.error("Não é possível obter saldo sem estar conectado")
-            return 0.0
+            logger.error("Não conectado. Não é possível obter saldo.")
+            return False
         
         try:
-            # Obtém o saldo e a moeda
+            logger.debug("Chamando api.get_balance() e api.get_currency()...")
             self.saldo = self.api.get_balance()
             self.moeda = self.api.get_currency()
-            
-            logger.info(f"Saldo atual: {self.saldo} {self.moeda}")
-            return self.saldo
+            logger.info(f"Saldo obtido da API: {self.saldo} {self.moeda}")
+            if self.saldo is None or self.moeda is None:
+                 logger.error("API retornou None para saldo ou moeda.")
+                 return False
+            return True
         except Exception as e:
-            logger.error(f"Erro ao obter saldo: {e}")
-            return 0.0
+            logger.error(f"Erro ao obter saldo/moeda da API: {e}", exc_info=True)
+            self.saldo = 0.0 # Zera em caso de erro
+            self.moeda = None
+            return False
     
     def verificar_conexao(self):
         """
@@ -151,34 +215,15 @@ class LoginIQOption:
     
     def obter_info_conta(self):
         """
-        Retorna as informações atuais da conta
-        
-        Retorna:
-            dict: Dicionário com informações da conta
+        Retorna as informações atuais da conta (estado interno da classe).
         """
         return {
             "email": self.email,
-            "tipo_conta": self.tipo_conta,
+            "tipo_conta": self.tipo_conta, # Pode ser None se a seleção falhou
             "saldo": self.saldo,
             "moeda": self.moeda,
             "conectado": self.conectado,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-# Função auxiliar para uso direto do módulo
-def fazer_login(email, senha, tipo_conta="TREINAMENTO"):
-    """
-    Função auxiliar para realizar login na IQ Option
-    
-    Parâmetros:
-        email (str): Email da conta
-        senha (str): Senha da conta
-        tipo_conta (str): REAL, TREINAMENTO ou TORNEIO
-    
-    Retorna:
-        tuple: (LoginIQOption, bool) - Objeto de login e status da conexão
-    """
-    login_manager = LoginIQOption()
-    status = login_manager.conectar(email, senha, tipo_conta)
-    
-    return login_manager, status 
+# Função auxiliar foi removida pois o fluxo mudou 

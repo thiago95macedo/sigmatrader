@@ -13,11 +13,9 @@ import getpass
 import platform
 from datetime import datetime
 
-# Importa o módulo de login para IQ Option
-from iqoption.login import LoginIQOption
-
-# Importa as funções de banco de dados
-from data.database import (
+# Importa módulos da aplicação
+from iqoption import LoginIQOption, listar_ativos_abertos
+from data import (
     inicializar_banco_dados,
     verificar_contas_existentes,
     listar_contas,
@@ -30,12 +28,16 @@ from data.database import (
     obter_saldos_conta,
     atualizar_saldos_conta,
     obter_id_conta_atual,
+    atualizar_perfil_conta_iq,
+    obter_perfil_conta_local,
 )
 
 # --- Constantes --- #
 LOG_DIR = "log"
 LOG_PATH = os.path.join(LOG_DIR, "sigmatrader.log")
 SEPARATOR = "=" * 60  # Separador visual
+TIPOS_CONTA_MAP = { "1": "TREINAMENTO", "2": "REAL", "3": "TORNEIO" }
+MERCADOS_MAP = { "1": "Binário/Turbo", "2": "Digital", "3": "Forex", "4": "Cripto" }
 
 # --- Configuração de Logging --- #
 # Verifica se o diretório de logs existe
@@ -70,6 +72,9 @@ def print_success(message):
 def print_info(message):
     """Imprime uma mensagem informativa formatada."""
     print(f"\n[INFO] {message}")
+
+def press_enter_to_continue():
+    input("\nPressione Enter para continuar...")
 
 def get_password_with_asterisks(prompt="Senha: "):
     """
@@ -153,12 +158,7 @@ def cadastrar_conta_interface():
     
     opcao_tipo = input("  Opção (padrão: 1): ").strip()
     
-    if opcao_tipo == "2":
-        tipo_conta = "REAL"
-    elif opcao_tipo == "3":
-        tipo_conta = "TORNEIO"
-    else:
-        tipo_conta = "TREINAMENTO"
+    tipo_conta = TIPOS_CONTA_MAP.get(opcao_tipo, "TREINAMENTO")
     
     # Chama a função do DB para cadastrar
     if cadastrar_conta_db(nome_completo, email, senha, tipo_conta):
@@ -192,62 +192,113 @@ def deletar_conta_interface(conta_id):
         print_error(f"Falha ao excluir conta no banco de dados.")
         return False
 
-def login_iqoption(conta_detalhes):
+def login_iqoption(conta_detalhes, tipo_conta_selecionado):
     """
-    Realiza login na plataforma IQ Option e atualiza os saldos no DB.
+    Realiza login e seleciona o tipo de conta.
+    Retorna (LoginIQOption, conta_id) ou (None, None).
     """
-    if not conta_detalhes or len(conta_detalhes) < 5:
-        logger.error("Detalhes da conta incompletos ou inválidos para login")
-        print_error("Dados internos da conta inválidos para login.")
-        return None
-    
-    conta_id, nome, email, senha, tipo_conta_inicial = conta_detalhes
+    if not conta_detalhes or len(conta_detalhes) < 5: logger.error("..."); print_error("..."); return None, None
+    conta_id, nome, email, senha, _ = conta_detalhes
     
     print_header(f"Login para {nome}")
-    print(f"  Tentando conectar com a conta '{tipo_conta_inicial}'...")
+    print(f"  Tentando conectar e selecionar conta '{tipo_conta_selecionado}'...")
     
-    # Cria o gerenciador de login
     login_manager = LoginIQOption()
-    
-    # Tenta conectar
-    if login_manager.conectar(email, senha, tipo_conta_inicial):
+    if login_manager.conectar(email, senha, tipo_conta=tipo_conta_selecionado, conta_id_db=conta_id):
         info = login_manager.obter_info_conta()
-        print_success(f"Conexão estabelecida com sucesso!")
-        print(f"  Saldo atual ({info['tipo_conta']}): {info['saldo']:.2f} {info['moeda']}")
+        tipo_ativo_real = info.get('tipo_conta')
         
-        # Atualiza o saldo correspondente no banco de dados
-        tipo_conta_conectada = info['tipo_conta'] or "TREINAMENTO" # Usa Treinamento se None
-        print(f"  Atualizando saldo {tipo_conta_conectada} no banco de dados...")
-        if not atualizar_saldos_conta(conta_id, tipo_conta_conectada, info['saldo'], info['moeda']):
-             logger.warning(f"Não foi possível atualizar o saldo {tipo_conta_conectada} da conta {conta_id} no DB.")
-             print(f"  [AVISO] Não foi possível atualizar o saldo {tipo_conta_conectada} no banco de dados local.")
-        
-        # Exibe os saldos armazenados
-        saldos = obter_saldos_conta(conta_id)
-        if saldos:
-            print("\n  Saldos Armazenados Localmente:")
-            print(f"    Real:        {saldos['saldo_real']:.2f} {saldos['moeda']}")
-            print(f"    Treinamento: {saldos['saldo_treinamento']:.2f} {saldos['moeda']}")
-            print(f"    Torneio:     {saldos['saldo_torneio']:.2f} {saldos['moeda']}")
-            print(f"    (Última atualização BD: {saldos['ultima_atualizacao']})" if saldos['ultima_atualizacao'] else "")
-        
-        return login_manager
-    else:
-        print_error("Falha ao conectar à IQ Option. Verifique suas credenciais e conexão.")
-        return None
+        if tipo_ativo_real == tipo_conta_selecionado:
+            print_success(f"Conectado! Conta ativa: {tipo_ativo_real} (Saldo: {info.get('saldo', 0.0):.2f} {info.get('moeda', '')})")
+        else:
+            logger.warning(f"Após conexão, tipo ativo ('{tipo_ativo_real}') difere do solicitado ('{tipo_conta_selecionado}').")
+            print_error(f"Falha ao ativar conta {tipo_conta_selecionado}. Conta ativa atual: {tipo_ativo_real or 'Desconhecida'}. Saldo exibido pode ser de outra conta.")
+            print(f"  Saldo atual (API): {info.get('saldo', 0.0):.2f} {info.get('moeda', '')}")
 
+        tipo_para_db = tipo_ativo_real or tipo_conta_selecionado 
+        print_info(f"Atualizando saldo {tipo_para_db} no banco de dados...")
+        atualizar_saldos_conta(conta_id, tipo_para_db, info['saldo'], info['moeda'])
+            
+        return login_manager, conta_id
+    else:
+        print_error(f"Falha ao conectar à IQ Option para {email}. Verifique credenciais/conexão.")
+        return None, None
+
+def selecionar_tipo_conta_interface(default_tipo="TREINAMENTO"):
+    """Interface para escolher tipo de conta antes de conectar."""
+    print_header("Seleção de Tipo de Conta")
+    print("  Qual tipo de conta usar?")
+    print("    1. Treinamento")
+    print("    2. Real")
+    print("    3. Torneio")
+    while True:
+        opcao = input(f"  Opção (padrão: {default_tipo[0]}): ").strip()
+        if not opcao: return default_tipo
+        tipo_selecionado = TIPOS_CONTA_MAP.get(opcao)
+        if tipo_selecionado: return tipo_selecionado
+        else: print_error("Opção inválida.")
+
+def selecionar_mercado_ativo():
+    """Permite ao usuário escolher o mercado (tipo de ativo) para operar."""
+    print_header("Seleção de Mercado")
+    print("  Qual mercado operar?")
+    print("    1. Binário / Turbo")
+    print("    2. Digital")
+    print("    3. Forex")
+    print("    4. Cripto")
+    
+    while True:
+        opcao = input("  Opção: ").strip()
+        mercado_selecionado = MERCADOS_MAP.get(opcao)
+        if mercado_selecionado:
+            print_success(f"Mercado '{mercado_selecionado}' selecionado.")
+            return mercado_selecionado
+        else:
+            print_error("Opção inválida. Escolha 1, 2, 3 ou 4.")
+
+def exibir_ativos_abertos(iq_session, mercado_foco):
+    """Busca e exibe os ativos abertos para o mercado selecionado."""
+    print_header(f"Ativos Abertos - {mercado_foco}")
+    print_info("Buscando...")
+    
+    # A função listar_ativos_abertos precisa ser ajustada para aceitar filtro
+    # Supondo que ela retorne um dict {tipo: [ativos]} mesmo filtrando
+    ativos = listar_ativos_abertos(iq_session.api, mercado_foco=mercado_foco) 
+    
+    if ativos is None:
+        print_error("Não foi possível obter a lista de ativos. Verifique a conexão ou os logs.")
+        return
+        
+    lista_ativos = ativos.get(mercado_foco, []) # Pega a lista específica
+
+    if not lista_ativos:
+        print_info(f"Nenhum ativo encontrado aberto para o mercado {mercado_foco}.")
+        return
+        
+    print_success(f"Ativos {mercado_foco} ({len(lista_ativos)}):")
+    # Formatação em colunas
+    if len(lista_ativos) > 10:
+        col_width = max(len(a) for a in lista_ativos) + 2
+        num_cols = max(1, 80 // col_width)
+        for i in range(0, len(lista_ativos), num_cols):
+            linha = lista_ativos[i:i+num_cols]
+            print("    " + "".join(a.ljust(col_width) for a in linha))
+    else:
+        for ativo in lista_ativos:
+            print(f"    {ativo}")
+                
 def menu_gerenciar_contas():
     """
     Exibe o menu para gerenciar contas e retorna a sessão de login se selecionada.
     """
     while True: # Loop para voltar ao menu após cadastro/exclusão
-        print_header("Gerenciamento de Contas IQ Option")
+        print_header("Gerenciamento de Contas")
         
         contas = listar_contas()
         
         if not contas:
             print("  Nenhuma conta cadastrada.")
-            cadastrar_nova = input("\n  Deseja cadastrar uma nova conta? (S/n): ")
+            cadastrar_nova = input("\n  Cadastrar nova conta? (S/n): ")
             if cadastrar_nova.lower() != 'n':
                 cadastrar_conta_interface()
                 continue # Volta ao início do loop para mostrar a nova conta
@@ -259,7 +310,7 @@ def menu_gerenciar_contas():
             print(f"    {i}. {nome} ({email}) - Padrão: {tipo_conta}")
         
         print("\n  Opções:")
-        print("    1. Selecionar conta para login")
+        print("    1. Selecionar conta")
         print("    2. Cadastrar nova conta")
         print("    3. Excluir uma conta")
         print("    0. Voltar / Sair")
@@ -275,8 +326,7 @@ def menu_gerenciar_contas():
                     conta_detalhes = obter_detalhes_conta(conta_id)
                     if conta_detalhes:
                         registrar_acesso(conta_id)
-                        login_manager = login_iqoption(conta_detalhes)
-                        return login_manager # Retorna a sessão de login
+                        return conta_detalhes # Retorna os detalhes da conta selecionada
                     else:
                         print_error("Não foi possível obter detalhes da conta selecionada.")
                         # Continua no loop
@@ -307,97 +357,126 @@ def menu_gerenciar_contas():
         
         else:
             print_error("Opção inválida.")
-            input("  Pressione Enter para continuar...") # Pausa para o usuário ler
+            press_enter_to_continue() # Pausa para o usuário ler
 
-def menu_principal(iq_session):
-    """Exibe o menu principal da aplicação após o login."""
+def menu_principal(iq_session, conta_id, tipo_conta_foco, mercado_foco):
+    """Exibe o menu principal focado no tipo de conta e mercado."""
     while True:
-        conta_id = obter_id_conta_atual(iq_session.email)
-        info = iq_session.obter_info_conta()
-        saldos_db = obter_saldos_conta(conta_id) if conta_id else None
-        tipo_conta_ativa = info['tipo_conta'] or "TREINAMENTO"
-        saldo_ativo_iq = info['saldo']
-        moeda = info['moeda']
-
-        print_header(f"Menu Principal - {info['email']}")
-        print(f"  Conta Ativa IQ Option: {tipo_conta_ativa}")
-        print(f"  Saldo Atual IQ Option: {saldo_ativo_iq:.2f} {moeda}")
+        info = iq_session.obter_info_conta() # Pega info atual da API (pode ter mudado saldo)
+        saldos_db = obter_saldos_conta(conta_id) # Pega saldos do DB
+        
+        # Determina qual saldo mostrar com base no foco
+        saldo_foco_db = 0.0
+        moeda_db = "USD"
         if saldos_db:
-            print(f"  Saldo DB (Real):       {saldos_db['saldo_real']:.2f} {saldos_db['moeda']}")
-            print(f"  Saldo DB (Treinamento):{saldos_db['saldo_treinamento']:.2f} {saldos_db['moeda']}")
-            print(f"  Saldo DB (Torneio):    {saldos_db['saldo_torneio']:.2f} {saldos_db['moeda']}")
+            moeda_db = saldos_db.get("moeda", "USD")
+            if tipo_conta_foco == "REAL": saldo_foco_db = saldos_db.get("saldo_real", 0.0)
+            elif tipo_conta_foco == "TREINAMENTO": saldo_foco_db = saldos_db.get("saldo_treinamento", 0.0)
+            elif tipo_conta_foco == "TORNEIO": saldo_foco_db = saldos_db.get("saldo_torneio", 0.0)
+
+        print_header(f"MENU: {tipo_conta_foco} | {mercado_foco}")
+        print(f"  IQ Option: {info.get('tipo_conta', 'N/A')} ({info.get('saldo', 0.0):.2f} {info.get('moeda', '')})  |  BD Saldo Foco: {saldo_foco_db:.2f}")
         print(SEPARATOR)
         
         print("  Opções:")
-        print(f"    1. Atualizar saldo {tipo_conta_ativa} no Banco de Dados")
-        print("    2. Ver informações detalhadas da conta")
-        print("    3. Trocar tipo de conta na IQ Option")
-        # Adicionar mais opções aqui (ex: Operar, Configurar, etc.)
-        print("    0. Deslogar e Sair")
+        print(f"  1. Sincronizar Saldo {tipo_conta_foco} no BD")
+        print(f"  2. Listar Ativos {mercado_foco}")
+        print("  3. Trocar Tipo Conta (Sessão)")
+        print("  4. Trocar Mercado (Sessão)")
+        print("  5. Detalhes da Conta")
+        print("  0. Deslogar")
         
-        opcao = input("\n  Escolha uma opção: ").strip()
+        opcao = input("\n  Escolha: ").strip()
         
         if opcao == '1':
-            print_info(f"Atualizando saldo {tipo_conta_ativa} no BD...")
-            if conta_id:
-                if atualizar_saldos_conta(conta_id, tipo_conta_ativa, saldo_ativo_iq, moeda):
-                    print_success(f"Saldo {tipo_conta_ativa} atualizado com sucesso no banco de dados!")
-                else:
-                    print_error("Falha ao atualizar saldo no banco de dados.")
-            else:
-                print_error("Não foi possível identificar a conta atual no banco de dados.")
-            input("  Pressione Enter para continuar...")
+            if info.get('tipo_conta') == tipo_conta_foco:
+                print_info(f"Sincronizando saldo {tipo_conta_foco}...")
+                if atualizar_saldos_conta(conta_id, tipo_conta_foco, info['saldo'], info['moeda']):
+                    print_success("Saldo BD atualizado!")
+                else: print_error("Falha ao atualizar BD.")
+            else: print_error(f"Conta ativa ({info.get('tipo_conta')}) não é a de foco ({tipo_conta_foco}). Use opção 3.")
+            press_enter_to_continue()
             
         elif opcao == '2':
-            print_header("Informações da Conta")
-            print(f"  Email: {info['email']}")
-            print(f"  Tipo de Conta Ativa (IQ): {tipo_conta_ativa}")
-            print(f"  Saldo Atual (IQ): {saldo_ativo_iq:.2f} {moeda}")
-            print(f"  Status Conexão: {'Conectado' if info['conectado'] else 'Desconectado'}")
-            print(f"  Timestamp da Informação: {info['timestamp']}")
-            if saldos_db:
-                print("\n  Saldos Armazenados no BD:")
-                print(f"    Real:        {saldos_db['saldo_real']:.2f} {saldos_db['moeda']}")
-                print(f"    Treinamento: {saldos_db['saldo_treinamento']:.2f} {saldos_db['moeda']}")
-                print(f"    Torneio:     {saldos_db['saldo_torneio']:.2f} {saldos_db['moeda']}")
-                print(f"    Última atualização: {saldos_db['ultima_atualizacao']}")
-            else:
-                print("\n  Saldos no BD ainda não disponíveis.")
-            input("  Pressione Enter para continuar...")
-        
+            exibir_ativos_abertos(iq_session, mercado_foco)
+            press_enter_to_continue()
+
         elif opcao == '3':
-            print_header("Trocar Tipo de Conta na IQ Option")
+            # Usa a função de seleção de tipo, mas não a de interface completa
+            print("\n  Escolha novo tipo:")
             print("    1. Treinamento")
             print("    2. Real")
             print("    3. Torneio")
-            
-            tipo_opcao = input("  Escolha o novo tipo de conta: ").strip()
-            
-            tipo_novo = None
-            if tipo_opcao == '1': tipo_novo = "TREINAMENTO"
-            elif tipo_opcao == '2': tipo_novo = "REAL"
-            elif tipo_opcao == '3': tipo_novo = "TORNEIO"
+            tipo_opcao = input("  Opção: ").strip()
+            novo_tipo = TIPOS_CONTA_MAP.get(tipo_opcao)
+            if novo_tipo:
+                print_info(f"Tentando alterar para conta {novo_tipo}...")
+                if iq_session._selecionar_tipo_conta(novo_tipo):
+                    print_success(f"Conta IQ alterada para {novo_tipo}.")
+                    tipo_conta_foco = novo_tipo # Atualiza o foco
+                    info_atualizada = iq_session.obter_info_conta() # Pega novo saldo
+                    atualizar_saldos_conta(conta_id, novo_tipo, info_atualizada['saldo'], info_atualizada['moeda']) # Atualiza DB
+                else: print_error(f"Falha ao alterar para {novo_tipo}.")
             else: print_error("Opção inválida.")
-                
-            if tipo_novo:
-                print_info(f"Tentando alterar para conta {tipo_novo}...")
-                if iq_session._selecionar_tipo_conta(tipo_novo):
-                    print_success(f"Tipo de conta na IQ Option alterado para: {tipo_novo}")
-                    print(f"  Novo saldo atual: {iq_session.saldo:.2f} {iq_session.moeda}")
-                    # Atualiza o saldo do novo tipo no banco de dados
-                    if conta_id:
-                        atualizar_saldos_conta(conta_id, tipo_novo, iq_session.saldo, iq_session.moeda)
-                else:
-                    print_error(f"Falha ao alterar para o tipo de conta {tipo_novo} na IQ Option.")
-            input("  Pressione Enter para continuar...")
-        
+            press_enter_to_continue()
+
+        elif opcao == '4':
+            # Permite trocar o MERCADO para a sessão atual
+            novo_mercado = selecionar_mercado_ativo()
+            if novo_mercado:
+                mercado_foco = novo_mercado # Atualiza o foco da sessão
+            press_enter_to_continue()
+
+        elif opcao == '5':
+            # Busca os dados do perfil local antes de exibir
+            perfil_local = obter_perfil_conta_local(conta_id)
+            exibir_detalhes_conta(info, saldos_db, perfil_local) # Passa os dados do perfil
+            press_enter_to_continue()
+            
         elif opcao == '0':
             print_info("Deslogando e encerrando aplicação...")
             break # Sai do loop do menu principal
         
         else:
             print_error("Opção inválida.")
-            input("  Pressione Enter para continuar...")
+            press_enter_to_continue()
+
+def obter_saldo_foco_db(saldos_db, tipo_conta_foco):
+    """Retorna o saldo do BD para o tipo de conta em foco."""
+    if not saldos_db: return 0.0
+    if tipo_conta_foco == "REAL": return saldos_db.get("saldo_real", 0.0)
+    if tipo_conta_foco == "TREINAMENTO": return saldos_db.get("saldo_treinamento", 0.0)
+    if tipo_conta_foco == "TORNEIO": return saldos_db.get("saldo_torneio", 0.0)
+    return 0.0
+
+def exibir_detalhes_conta(info_api, saldos_db, perfil_local=None):
+    """Mostra informações detalhadas da API, do BD e do perfil local."""
+    print_header("Detalhes da Conta")
+    
+    print("[ IQ Option (API - Tempo Real) ]")
+    print(f"  Email: {info_api.get('email')}")
+    print(f"  Tipo Ativo: {info_api.get('tipo_conta', 'N/A')}")
+    print(f"  Saldo Ativo: {info_api.get('saldo', 0.0):.2f} {info_api.get('moeda', '')}")
+    print(f"  Conectado: {'Sim' if info_api.get('conectado') else 'Não'}")
+    print(f"  Timestamp: {info_api.get('timestamp')}")
+    
+    print("\n[ Banco de Dados (Local - Saldos) ]")
+    if saldos_db:
+        print(f"  Saldo Real:        {saldos_db.get('saldo_real', 0.0):.2f} {saldos_db.get('moeda')}")
+        print(f"  Saldo Treinamento: {saldos_db.get('saldo_treinamento', 0.0):.2f} {saldos_db.get('moeda')}")
+        print(f"  Saldo Torneio:     {saldos_db.get('saldo_torneio', 0.0):.2f} {saldos_db.get('moeda')}")
+        print(f"  Última Atualização: {saldos_db.get('ultima_atualizacao', 'N/A')}")
+    else:
+        print("  Saldos locais não disponíveis.")
+        
+    print("\n[ Banco de Dados (Local - Perfil IQ Option) ]")
+    if perfil_local:
+        print(f"  ID Usuário IQ: {perfil_local.get('iq_user_id', 'N/A')}")
+        print(f"  Nome IQ:       {perfil_local.get('iq_name', 'N/A')}")
+        print(f"  Nickname IQ:   {perfil_local.get('iq_nickname', 'N/A')}")
+        # print(f"  Avatar URL:    {perfil_local.get('iq_avatar_url', 'N/A')}") # Descomentar se quiser mostrar a URL
+    else:
+        print("  Dados do perfil IQ Option ainda não sincronizados localmente.")
 
 def main():
     """Função principal da aplicação"""
@@ -420,28 +499,40 @@ def main():
         print("  Para começar, vamos cadastrar sua primeira conta.")
         cadastrar_conta_interface()
     
-    # Loop para Gerenciamento de Contas e Login
-    iq_session = None
+    # Loop principal: Gerencia Contas -> Seleciona Tipo -> Conecta -> Seleciona Mercado -> Menu Operacional
     while True:
-        iq_session = menu_gerenciar_contas() # Entra no menu de gerenciamento
-        
-        if iq_session:
-            break # Sai do loop se o login for bem-sucedido
-        
-        # Se saiu do menu sem logar (opção 0 ou falha)
-        print_info("Nenhuma conta selecionada para login.")
-        continuar = input("  Deseja tentar gerenciar/selecionar contas novamente? (S/n): ")
-        if continuar.lower() == 'n':
+        # 1. Gerenciar/Selecionar Conta
+        conta_selecionada_detalhes = menu_gerenciar_contas()
+        if not conta_selecionada_detalhes:
+            # Usuário escolheu sair do gerenciamento
             print_info("Encerrando aplicação.")
-            logger.info("Usuário optou por não logar. Encerrando SigmaTrader.")
-            return # Encerra a aplicação
-        # Se a resposta for 's' ou vazia, o loop continua
+            logger.info("Usuário optou por não selecionar conta. Encerrando SigmaTrader.")
+            return
+        
+        # 2. Selecionar Tipo de Conta para a Sessão
+        # Usa o tipo padrão da conta como default na interface
+        tipo_conta_padrao = conta_selecionada_detalhes[4] or "TREINAMENTO"
+        tipo_conta_foco = selecionar_tipo_conta_interface(tipo_conta_padrao)
+        if not tipo_conta_foco: continue # Volta ao gerenciamento se a seleção falhar (improvável)
+
+        # 3. Tentar Conectar com o Tipo Selecionado
+        iq_session, conta_id = login_iqoption(conta_selecionada_detalhes, tipo_conta_foco)
+        
+        if iq_session and conta_id:
+            # 4. Selecionar Mercado
+            mercado_foco = selecionar_mercado_ativo()
+            if not mercado_foco: continue # Volta ao gerenciamento se falhar
             
-    # Se chegou aqui, temos uma sessão de login válida
-    print_success("Login realizado com sucesso!")
-    menu_principal(iq_session) # Entra no menu principal da aplicação
-    
-    logger.info("Encerrando SigmaTrader")
+            # 5. Entrar no Menu Principal Operacional
+            menu_principal(iq_session, conta_id, tipo_conta_foco, mercado_foco)
+            
+            # Se sair do menu_principal (opção 0), encerra a aplicação
+            return
+            
+        else:
+            # Falha no login
+            print_info("Login na IQ Option falhou.")
+            # O loop continua, voltando para o gerenciamento de contas
 
 # --- Execução Principal --- #
 if __name__ == "__main__":

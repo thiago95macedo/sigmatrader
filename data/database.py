@@ -179,6 +179,10 @@ def inicializar_banco_dados():
             {"name": "moeda", "definition": "TEXT DEFAULT 'USD'"},
             {"name": "ultima_atualizacao_saldo", "definition": "TIMESTAMP"},
             {"name": "ativo", "definition": "BOOLEAN DEFAULT 1"},
+            {"name": "iq_user_id", "definition": "INTEGER"},
+            {"name": "iq_name", "definition": "TEXT"},
+            {"name": "iq_nickname", "definition": "TEXT"},
+            {"name": "iq_avatar_url", "definition": "TEXT"},
         ]
         for col_info in colunas_contas:
             _add_column_if_not_exists("contas_iqoption", col_info)
@@ -389,4 +393,85 @@ def obter_id_conta_atual(email):
     """
     query = "SELECT id FROM contas_iqoption WHERE email = ? AND ativo = 1"
     result = _execute_query(query, (email,), fetch='one')
-    return result[0] if result else None 
+    return result[0] if result else None
+
+def obter_perfil_conta_local(conta_id):
+    """
+    Obtém os dados de perfil IQ Option armazenados localmente para uma conta.
+    
+    Args:
+        conta_id (int): O ID da conta no banco de dados local.
+        
+    Returns:
+        dict: Um dicionário com as chaves 'iq_user_id', 'iq_name', 'iq_nickname', 
+              'iq_avatar_url' ou None se a conta não for encontrada ou não tiver dados.
+    """
+    query = """
+    SELECT iq_user_id, iq_name, iq_nickname, iq_avatar_url
+    FROM contas_iqoption
+    WHERE id = ? AND ativo = 1
+    """
+    result = _execute_query(query, (conta_id,), fetch='one')
+    
+    if result:
+        return {
+            "iq_user_id": result[0],
+            "iq_name": result[1],
+            "iq_nickname": result[2],
+            "iq_avatar_url": result[3]
+        }
+    else:
+        logger.warning(f"Nenhum dado de perfil local encontrado para conta ID {conta_id}")
+        return None
+
+def atualizar_perfil_conta_iq(conta_id, perfil_data):
+    """
+    Atualiza os dados do perfil IQ Option (user_id, nome, nickname, avatar) 
+    para uma conta específica no banco de dados local.
+
+    Args:
+        conta_id (int): O ID da conta no banco de dados local.
+        perfil_data (dict): Um dicionário contendo os dados do perfil obtidos da API. 
+                            Esperam-se chaves como 'user_id', 'name', 'nickname', 'avatar'.
+                            Serão usados os valores encontrados, ignorando chaves ausentes.
+    
+    Returns:
+        bool: True se a atualização foi bem-sucedida, False caso contrário.
+    """
+    campos_para_atualizar = []
+    valores_para_atualizar = []
+
+    # Mapeia chaves do dicionário para nomes de coluna e adiciona se presente
+    mapeamento = {
+        'user_id': 'iq_user_id',
+        'name': 'iq_name',
+        'nickname': 'iq_nickname',
+        'avatar': 'iq_avatar_url' # Assumindo que a API retorna 'avatar' para a URL
+    }
+
+    for chave_api, coluna_db in mapeamento.items():
+        if chave_api in perfil_data and perfil_data[chave_api] is not None:
+            campos_para_atualizar.append(f"{coluna_db} = ?")
+            valores_para_atualizar.append(perfil_data[chave_api])
+
+    if not campos_para_atualizar:
+        logger.warning(f"Nenhum dado de perfil válido encontrado para atualizar conta ID {conta_id}.")
+        return False # Nada para atualizar
+
+    # Adiciona o conta_id ao final da lista de valores para o WHERE
+    valores_para_atualizar.append(conta_id)
+
+    query = f"""
+    UPDATE contas_iqoption 
+    SET {', '.join(campos_para_atualizar)}
+    WHERE id = ?
+    """
+    
+    success = _execute_query(query, tuple(valores_para_atualizar), commit=True)
+    
+    if success:
+        logger.info(f"Perfil IQ Option atualizado no DB para conta ID {conta_id}.")
+    else:
+        logger.error(f"Falha ao atualizar perfil IQ Option no DB para conta ID {conta_id}.")
+        
+    return success 

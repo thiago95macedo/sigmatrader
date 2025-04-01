@@ -14,7 +14,7 @@ import platform
 from datetime import datetime
 
 # Importa módulos da aplicação
-from iqoption import LoginIQOption, listar_ativos_abertos
+from iqoption import LoginIQOption, listar_ativos_abertos_com_payout
 from data import (
     inicializar_banco_dados,
     verificar_contas_existentes,
@@ -40,7 +40,6 @@ TIPOS_CONTA_MAP = { "1": "TREINAMENTO", "2": "REAL", "3": "TORNEIO" }
 MERCADOS_MAP = { "1": "Binário/Turbo", "2": "Digital", "3": "Forex", "4": "Cripto" }
 
 # --- Configuração de Logging --- #
-# Verifica se o diretório de logs existe
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
@@ -53,6 +52,14 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Silencia logs de bibliotecas de terceiros no terminal
+try:
+    logging.getLogger('iqoptionapi.ws.client').setLevel(logging.WARNING)
+    logging.getLogger('iqoptionapi.api').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+except Exception as e_log:
+    logger.warning(f"Não foi possível silenciar logger(s) da biblioteca: {e_log}")
 
 # --- Funções de Interface Auxiliares --- #
 def print_header(title):
@@ -257,36 +264,50 @@ def selecionar_mercado_ativo():
             print_error("Opção inválida. Escolha 1, 2, 3 ou 4.")
 
 def exibir_ativos_abertos(iq_session, mercado_foco):
-    """Busca e exibe os ativos abertos para o mercado selecionado."""
+    """Busca e exibe os ativos abertos para o mercado selecionado, com payout."""
     print_header(f"Ativos Abertos - {mercado_foco}")
     print_info("Buscando...")
     
-    # A função listar_ativos_abertos precisa ser ajustada para aceitar filtro
-    # Supondo que ela retorne um dict {tipo: [ativos]} mesmo filtrando
-    ativos = listar_ativos_abertos(iq_session.api, mercado_foco=mercado_foco) 
+    # Chama a função que retorna lista de tuplas (ativo, payout)
+    ativos_com_detalhes = listar_ativos_abertos_com_payout(iq_session.api, mercado_foco=mercado_foco) 
     
-    if ativos is None:
-        print_error("Não foi possível obter a lista de ativos. Verifique a conexão ou os logs.")
+    if ativos_com_detalhes is None:
+        print_error("Não foi possível obter a lista de ativos/detalhes. Verifique a conexão ou os logs.")
         return
         
-    lista_ativos = ativos.get(mercado_foco, []) # Pega a lista específica
+    if not ativos_com_detalhes:
+        print_info(f"Nenhum ativo encontrado aberto para o mercado {mercado_foco}.") 
+        return
+        
+    # Define o título com base na disponibilidade de detalhes
+    contem_payout = any(p is not None for _, p in ativos_com_detalhes)
+    
+    titulo_sucesso = f"Ativos {mercado_foco} ({len(ativos_com_detalhes)})"
+    detalhes_str = []
+    if contem_payout: detalhes_str.append("Payout")
 
-    if not lista_ativos:
-        print_info(f"Nenhum ativo encontrado aberto para o mercado {mercado_foco}.")
-        return
-        
-    print_success(f"Ativos {mercado_foco} ({len(lista_ativos)}):")
-    # Formatação em colunas
-    if len(lista_ativos) > 10:
-        col_width = max(len(a) for a in lista_ativos) + 2
-        num_cols = max(1, 80 // col_width)
-        for i in range(0, len(lista_ativos), num_cols):
-            linha = lista_ativos[i:i+num_cols]
-            print("    " + "".join(a.ljust(col_width) for a in linha))
+    if detalhes_str:
+        titulo_sucesso += f" - Ordenado por Payout ({', '.join(detalhes_str)})"
     else:
-        for ativo in lista_ativos:
-            print(f"    {ativo}")
-                
+        titulo_sucesso += " - Abertos"
+    print_success(titulo_sucesso)
+    
+    # Formatação em colunas 
+    def formatar_item(ativo, payout):
+        base = f"{ativo}"
+        if payout is not None:
+            base += f" ({payout}%)"
+        return base
+        
+    itens_formatados = [formatar_item(a, p) for a, p in ativos_com_detalhes]
+    col_width = max(len(item) for item in itens_formatados) + 2 # Espaço extra
+    max_cols = 3 # Pode voltar para 3 colunas
+    num_cols = min(max_cols, max(1, 100 // col_width))
+    
+    for i in range(0, len(itens_formatados), num_cols):
+        linha_itens = itens_formatados[i:i+num_cols]
+        print("    " + "".join(item.ljust(col_width) for item in linha_itens))
+
 def menu_gerenciar_contas():
     """
     Exibe o menu para gerenciar contas e retorna a sessão de login se selecionada.

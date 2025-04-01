@@ -58,6 +58,7 @@ try:
     logging.getLogger('iqoptionapi.ws.client').setLevel(logging.WARNING)
     logging.getLogger('iqoptionapi.api').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('websocket').setLevel(logging.WARNING)  # Silencia os logs de ping do websocket
 except Exception as e_log:
     logger.warning(f"Não foi possível silenciar logger(s) da biblioteca: {e_log}")
 

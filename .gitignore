@@ -6,7 +6,6 @@ ENV/
 .venv/
 
 # Diretórios específicos da aplicação
-data/
 log/
 
 # Arquivos Python compilados

@@ -88,22 +88,31 @@ class LoginIQOption:
             logger.error("Não é possível selecionar tipo de conta sem estar conectado")
             return False
         
+        # Normaliza o tipo de conta
+        tipo_conta = tipo_conta.upper() if isinstance(tipo_conta, str) else tipo_conta
+        
         # Obtém o código do tipo de conta da API
         codigo_tipo = TIPO_CONTA.get(tipo_conta, "PRACTICE")
         
         # Seleciona o tipo de conta
         logger.info(f"Alterando para conta do tipo: {tipo_conta}")
-        resultado = self.api.change_balance(codigo_tipo)
         
-        if resultado:
-            self.tipo_conta = tipo_conta
-            logger.info(f"Tipo de conta alterado para: {tipo_conta}")
+        try:
+            resultado = self.api.change_balance(codigo_tipo)
             
-            # Atualiza saldo após a mudança de conta
-            self._atualizar_saldo()
-            return True
-        else:
-            logger.error(f"Falha ao alterar para o tipo de conta: {tipo_conta}")
+            if resultado:
+                self.tipo_conta = tipo_conta
+                logger.info(f"Tipo de conta alterado para: {tipo_conta}")
+                
+                # Atualiza saldo após a mudança de conta
+                time.sleep(1)  # Pequena pausa para garantir que a API atualize
+                self._atualizar_saldo()
+                return True
+            else:
+                logger.error(f"Falha ao alterar para o tipo de conta: {tipo_conta}")
+                return False
+        except Exception as e:
+            logger.error(f"Erro ao alterar tipo de conta para {tipo_conta}: {e}")
             return False
     
     def _atualizar_saldo(self):

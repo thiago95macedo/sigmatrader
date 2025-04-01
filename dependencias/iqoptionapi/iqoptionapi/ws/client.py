@@ -71,10 +71,27 @@ class WebsocketClient(object):
             <iqoptionapi.api.IQOptionAPI>`.
         """
         self.api = api
+        
+        # Adicionar headers e cookies semelhantes a um navegador real
+        extra_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Origin": "https://iqoption.com",
+            "Upgrade": "websocket"
+        }
+        
+        # Incluir cookies da sessão nos headers
+        cookie_str = "; ".join([f"{k}={v}" for k, v in self.api.session.cookies.get_dict().items()])
+        if cookie_str:
+            extra_headers["Cookie"] = cookie_str
+            
         self.wss = websocket.WebSocketApp(
-            self.api.wss_url, on_message=self.on_message,
-            on_error=self.on_error, on_close=self.on_close,
-            on_open=self.on_open)
+            self.api.wss_url, 
+            on_message=self.on_message,
+            on_error=self.on_error, 
+            on_close=self.on_close,
+            on_open=self.on_open,
+            header=extra_headers
+        )
 
     def dict_queue_add(self, dict, maxdict, key1, key2, key3, value):
         if key3 in dict[key1][key2]:
@@ -99,76 +116,131 @@ class WebsocketClient(object):
                 del obj[k]
                 break
 
-    def on_message(self, message):  # pylint: disable=unused-argument
+    def on_message(self, websocket, message):  # pylint: disable=unused-argument
         """Method to process websocket messages."""
         global_value.ssl_Mutual_exclusion = True
         logger = logging.getLogger(__name__)
-        logger.debug(message)
+        
+        # ----- Verificações Iniciais ----- #
+        if message is None:
+            logger.warning("Mensagem nula recebida do WebSocket")
+            global_value.ssl_Mutual_exclusion = False
+            return
+            
+        # Assegurar que a mensagem é uma string para manipulação segura
+        if not isinstance(message, str):
+            try:
+                # Tentar decodificar bytes para string (UTF-8 padrão)
+                message = message.decode('utf-8')
+            except (UnicodeDecodeError, AttributeError) as decode_error:
+                logger.warning(f"Mensagem não decodificável recebida: {decode_error}. Tipo: {type(message)}")
+                global_value.ssl_Mutual_exclusion = False
+                return
 
-        message = json.loads(str(message))
+        # Remover espaços em branco no início e fim
+        message = message.strip()
+        
+        # Verificar se a mensagem está vazia após strip
+        if not message:
+            logger.warning("Mensagem vazia (após strip) recebida do WebSocket")
+            global_value.ssl_Mutual_exclusion = False
+            return
+            
+        # Verificar se é uma mensagem JSON válida (começa com { ou [)
+        if not message.startswith(("{", "[")):
+            logger.debug(f"Mensagem não-JSON recebida e ignorada: '{message[:100]}...'")
+            global_value.ssl_Mutual_exclusion = False
+            return
+            
+        # ----- Processamento JSON ----- #
+        # Log para debug
+        if len(message) < 1000:
+            logger.debug(f"Processando mensagem: {message}")
+        else:
+            logger.debug(f"Processando mensagem grande: {message[:200]}... (truncada)")
 
-
-        technical_indicators(self.api, message, self.api_dict_clean)
-        time_sync(self.api, message)
-        heartbeat(self.api, message)
-        balances(self.api, message)
-        profile(self.api, message)
-        balance_changed(self.api, message)
-        candles(self.api, message)
-        buy_complete(self.api, message)
-        option(self.api, message)
-        position_history(self.api, message)
-        list_info_data(self.api, message)
-        candle_generated_realtime(self.api, message, self.dict_queue_add)
-        candle_generated_v2(self.api, message, self.dict_queue_add)
-        commission_changed(self.api, message)
-        socket_option_opened(self.api, message)
-        api_option_init_all_result(self.api, message)
-        initialization_data(self.api, message)
-        underlying_list(self.api, message)
-        instruments(self.api, message)
-        financial_information(self.api, message)
-        position_changed(self.api, message)
-        option_opened(self.api, message)
-        option_closed(self.api, message)
-        top_assets_updated(self.api, message)
-        strike_list(self.api, message)
-        api_game_betinfo_result(self.api, message)
-        traders_mood_changed(self.api, message)
-         # ------for forex&cfd&crypto..
-        order_placed_temp(self.api, message)
-        order(self.api, message)
-        position(self.api, message)
-        positions(self.api, message)
-        order_placed_temp(self.api, message)
-        deferred_orders(self.api, message)
-        history_positions(self.api, message)
-        available_leverages(self.api, message)
-        order_canceled(self.api, message)
-        position_closed(self.api, message)
-        overnight_fee(self.api, message)
-        api_game_getoptions_result(self.api, message)
-        sold_options(self.api, message)
-        tpsl_changed(self.api, message)
-        auto_margin_call_changed(self.api, message)
-        digital_option_placed(self.api, message, self.api_dict_clean)
-        result(self.api, message)
-        instrument_quotes_generated(self.api, message)
-        training_balance_reset(self.api, message)
-        socket_option_closed(self.api, message)
-        live_deal_binary_option_placed(self.api, message)
-        live_deal_digital_option(self.api, message)
-        leaderboard_deals_client(self.api, message)
-        live_deal(self.api, message)
-        user_profile_client(self.api, message)
-        leaderboard_userinfo_deals_client(self.api, message)
-        users_availability(self.api, message)
-        client_price_generated(self.api, message)
-
+        try:
+            # Converter a mensagem para JSON
+            message_json = json.loads(message) # Usar 'message' já tratada
+            
+            # Registrar o tipo de mensagem para diagnóstico
+            if "name" in message_json:
+                logger.debug(f"Tipo da mensagem: {message_json['name']}")
+                        
+            # Processa a mensagem conforme o tipo (código existente)
+            technical_indicators(self.api, message_json, self.api_dict_clean)
+            time_sync(self.api, message_json)
+            heartbeat(self.api, message_json)
+            balances(self.api, message_json)
+            profile(self.api, message_json)
+            balance_changed(self.api, message_json)
+            candles(self.api, message_json)
+            buy_complete(self.api, message_json)
+            option(self.api, message_json)
+            position_history(self.api, message_json)
+            list_info_data(self.api, message_json)
+            candle_generated_realtime(self.api, message_json, self.dict_queue_add)
+            candle_generated_v2(self.api, message_json, self.dict_queue_add)
+            commission_changed(self.api, message_json)
+            socket_option_opened(self.api, message_json)
+            api_option_init_all_result(self.api, message_json)
+            initialization_data(self.api, message_json)
+            underlying_list(self.api, message_json)
+            instruments(self.api, message_json)
+            financial_information(self.api, message_json)
+            position_changed(self.api, message_json)
+            option_opened(self.api, message_json)
+            option_closed(self.api, message_json)
+            top_assets_updated(self.api, message_json)
+            strike_list(self.api, message_json)
+            api_game_betinfo_result(self.api, message_json)
+            traders_mood_changed(self.api, message_json)
+             # ------for forex&cfd&crypto..
+            order_placed_temp(self.api, message_json)
+            order(self.api, message_json)
+            position(self.api, message_json)
+            positions(self.api, message_json)
+            order_placed_temp(self.api, message_json)
+            deferred_orders(self.api, message_json)
+            history_positions(self.api, message_json)
+            available_leverages(self.api, message_json)
+            order_canceled(self.api, message_json)
+            position_closed(self.api, message_json)
+            overnight_fee(self.api, message_json)
+            api_game_getoptions_result(self.api, message_json)
+            sold_options(self.api, message_json)
+            tpsl_changed(self.api, message_json)
+            auto_margin_call_changed(self.api, message_json)
+            digital_option_placed(self.api, message_json, self.api_dict_clean)
+            result(self.api, message_json)
+            instrument_quotes_generated(self.api, message_json)
+            training_balance_reset(self.api, message_json)
+            socket_option_closed(self.api, message_json)
+            live_deal_binary_option_placed(self.api, message_json)
+            live_deal_digital_option(self.api, message_json)
+            leaderboard_deals_client(self.api, message_json)
+            live_deal(self.api, message_json)
+            user_profile_client(self.api, message_json)
+            leaderboard_userinfo_deals_client(self.api, message_json)
+            users_availability(self.api, message_json)
+            client_price_generated(self.api, message_json)
+            
+        except json.JSONDecodeError as e:
+            # Esta exceção agora deve ser mais rara com as verificações acima
+            logger.error(f"Erro ao decodificar mensagem JSON (mesmo após verificações): {e}")
+            logger.debug(f"Mensagem problemática: {message[:100]}...")
+        except KeyError as e:
+            logger.error(f"Erro de chave ao processar mensagem JSON: {e}")
+            logger.debug(f"Mensagem JSON com formato inesperado: {message_json}")
+        except Exception as e:
+            logger.error(f"Erro não esperado ao processar mensagem: {str(e)}")
+            import traceback
+            logger.debug(f"Detalhes do erro: {traceback.format_exc()}")
+            
         global_value.ssl_Mutual_exclusion = False
 
     @staticmethod
-    def on_error(wss, error):  # pylint: disable=unused-argument
+    def on_error(websocket, error):  # pylint: disable=unused-argument
         """Method to process websocket errors."""
         logger = logging.getLogger(__name__)
         logger.error(error)
@@ -176,14 +248,14 @@ class WebsocketClient(object):
         global_value.check_websocket_if_error = True
 
     @staticmethod
-    def on_open(wss):  # pylint: disable=unused-argument
+    def on_open(websocket):  # pylint: disable=unused-argument
         """Method to process websocket open."""
         logger = logging.getLogger(__name__)
         logger.debug("Websocket client connected.")
         global_value.check_websocket_if_connect = 1
 
     @staticmethod
-    def on_close(wss):  # pylint: disable=unused-argument
+    def on_close(websocket, close_status_code, close_msg):  # pylint: disable=unused-argument
         """Method to process websocket close."""
         logger = logging.getLogger(__name__)
         logger.debug("Websocket connection closed.")

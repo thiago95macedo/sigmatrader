@@ -211,24 +211,38 @@ def login_iqoption(conta_detalhes, tipo_conta_selecionado):
     print(f"  Tentando conectar e selecionar conta '{tipo_conta_selecionado}'...")
     
     login_manager = LoginIQOption()
-    if login_manager.conectar(email, senha, tipo_conta=tipo_conta_selecionado, conta_id_db=conta_id):
-        info = login_manager.obter_info_conta()
-        tipo_ativo_real = info.get('tipo_conta')
-        
-        if tipo_ativo_real == tipo_conta_selecionado:
-            print_success(f"Conectado! Conta ativa: {tipo_ativo_real} (Saldo: {info.get('saldo', 0.0):.2f} {info.get('moeda', '')})")
-        else:
-            logger.warning(f"Após conexão, tipo ativo ('{tipo_ativo_real}') difere do solicitado ('{tipo_conta_selecionado}').")
-            print_error(f"Falha ao ativar conta {tipo_conta_selecionado}. Conta ativa atual: {tipo_ativo_real or 'Desconhecida'}. Saldo exibido pode ser de outra conta.")
-            print(f"  Saldo atual (API): {info.get('saldo', 0.0):.2f} {info.get('moeda', '')}")
-
-        tipo_para_db = tipo_ativo_real or tipo_conta_selecionado 
-        print_info(f"Atualizando saldo {tipo_para_db} no banco de dados...")
-        atualizar_saldos_conta(conta_id, tipo_para_db, info['saldo'], info['moeda'])
+    try:
+        if login_manager.conectar(email, senha, tipo_conta=tipo_conta_selecionado, conta_id_db=conta_id):
+            info = login_manager.obter_info_conta()
+            tipo_ativo_real = info.get('tipo_conta')
             
-        return login_manager, conta_id
-    else:
-        print_error(f"Falha ao conectar à IQ Option para {email}. Verifique credenciais/conexão.")
+            if tipo_ativo_real == tipo_conta_selecionado:
+                print_success(f"Conectado! Conta ativa: {tipo_ativo_real} (Saldo: {info.get('saldo', 0.0):.2f} {info.get('moeda', '')})")
+            else:
+                logger.warning(f"Após conexão, tipo ativo ('{tipo_ativo_real}') difere do solicitado ('{tipo_conta_selecionado}').")
+                print_error(f"Falha ao ativar conta {tipo_conta_selecionado}. Conta ativa atual: {tipo_ativo_real or 'Desconhecida'}. Saldo exibido pode ser de outra conta.")
+                print(f"  Saldo atual (API): {info.get('saldo', 0.0):.2f} {info.get('moeda', '')}")
+
+            tipo_para_db = tipo_ativo_real or tipo_conta_selecionado 
+            print_info(f"Atualizando saldo {tipo_para_db} no banco de dados...")
+            atualizar_saldos_conta(conta_id, tipo_para_db, info['saldo'], info['moeda'])
+                
+            return login_manager, conta_id
+        else:
+            # Verifica se há informações de erro específicas no objeto login_manager
+            if hasattr(login_manager, 'ultimo_erro') and login_manager.ultimo_erro:
+                print_error(f"Falha ao conectar: {login_manager.ultimo_erro}")
+            elif "name resolution" in str(login_manager.__dict__):
+                print_error(f"Erro de conexão de rede: Não foi possível conectar ao servidor IQ Option. Verifique sua conexão com a internet.")
+            else:
+                print_error(f"Falha ao conectar à IQ Option para {email}. Verifique credenciais e conexão de rede.")
+            return None, None
+    except Exception as e:
+        if "name resolution" in str(e):
+            print_error(f"Erro de conexão de rede: Não foi possível conectar ao servidor IQ Option. Verifique sua conexão com a internet.")
+        else:
+            print_error(f"Erro inesperado ao conectar à IQ Option: {e}")
+            logger.error(f"Exceção detalhada durante login: {e}", exc_info=True)
         return None, None
 
 def selecionar_tipo_conta_interface(default_tipo="TREINAMENTO"):

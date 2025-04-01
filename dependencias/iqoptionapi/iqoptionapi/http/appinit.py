@@ -22,3 +22,17 @@ class Appinit(Resource):
         :returns: The instance of :class:`requests.Response`.
         """
         return self._get()
+        
+    def get_app_init(self):
+        """Method to get application initialization data.
+        
+        :returns: The instance of :class:`requests.Response`.
+        """
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://iqoption.com/",
+            "Origin": "https://iqoption.com"
+        }
+        return self._get(headers=headers)

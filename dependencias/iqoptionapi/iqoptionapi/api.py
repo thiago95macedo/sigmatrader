@@ -167,6 +167,21 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         self.session = requests.Session()
         self.session.verify = False
         self.session.trust_env = False
+        
+        # Adicionar headers de navegador para evitar bloqueio de segurança
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Origin": "https://iqoption.com",
+            "Connection": "keep-alive",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+            "Referer": "https://iqoption.com/",
+            "Accept-Encoding": "gzip, deflate, br"
+        })
+        
         self.username = username
         self.password = password
         self.token_login2fa = None
@@ -233,23 +248,63 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         :returns: The instance of :class:`Response <requests.Response>`.
         """
         logger = logging.getLogger(__name__)
+        
+        # Adicionar cabeçalhos gerais caso não existam
+        if headers is None:
+            headers = {}
+            
+        # Garantir que headers padrão da sessão sejam usados e, em seguida, atualizados
+        request_headers = self.session.headers.copy()
+        request_headers.update(headers)
+        
+        # Para debug: logging completo dos headers
+        logger.debug(f"URL: {method} {url}")
+        logger.debug(f"Headers completos: {json.dumps(dict(request_headers), indent=2)}")
+        logger.debug(f"Cookies: {json.dumps(dict(self.session.cookies.get_dict()), indent=2)}")
+        
+        # Converter dados para JSON se for um dicionário
+        if isinstance(data, dict):
+            data_json = json.dumps(data)
+            logger.debug(f"Dados da requisição: {data_json}")
+        else:
+            data_json = data
+            if data:
+                logger.debug(f"Dados da requisição (raw): {data[:200]}...")  # Limita para os primeiros 200 caracteres
 
-        logger.debug(method + ": " + url + " headers: " + str(self.session.headers) +
-                     " cookies:  " + str(self.session.cookies.get_dict()))
-
-        response = self.session.request(method=method,
-                                        url=url,
-                                        data=data,
-                                        params=params,
-                                        headers=headers,
-                                        proxies=self.proxies)
-        logger.debug(response)
-        logger.debug(response.text)
-        logger.debug(response.headers)
-        logger.debug(response.cookies)
-
-        # response.raise_for_status()
-        return response
+        try:
+            response = self.session.request(method=method,
+                                           url=url,
+                                           data=data_json,
+                                           params=params,
+                                           headers=request_headers,
+                                           proxies=self.proxies,
+                                           timeout=30)
+            
+            # Log da resposta
+            logger.debug(f"Status da resposta: {response.status_code}")
+            logger.debug(f"Headers da resposta: {dict(response.headers)}")
+            
+            # Tentar decodificar JSON se possível, senão mostrar texto bruto
+            try:
+                response_content = response.json()
+                logger.debug(f"Conteúdo da resposta: {json.dumps(response_content, indent=2)}")
+            except:
+                # Se não for JSON, mostra apenas os primeiros bytes para debug
+                logger.debug(f"Conteúdo da resposta (não-JSON): {response.text[:200]}...")
+            
+            # Log mais limpo para erros
+            if response.status_code >= 400:
+                logger.error(f"Erro HTTP: {response.status_code} - {response.text}")
+                
+            return response
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erro na requisição HTTP: {str(e)}")
+            # Criar uma resposta simulada com erro
+            error_response = requests.Response()
+            error_response.status_code = 500
+            error_response._content = json.dumps({"error": str(e)}).encode('utf-8')
+            return error_response
 
     @property
     def websocket(self):
@@ -772,28 +827,48 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         requests.utils.add_dict_to_cookiejar(self.session.cookies, cookies)
 
     def start_websocket(self):
-        global_value.check_websocket_if_connect = None
-        global_value.check_websocket_if_error = False
-        global_value.websocket_error_reason = None
-
+        """Method for start websocket connection."""
+        requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
         self.websocket_client = WebsocketClient(self)
-
-        self.websocket_thread = threading.Thread(target=self.websocket.run_forever, kwargs={'sslopt': {
-                                                 "check_hostname": False, "cert_reqs": ssl.CERT_NONE, "ca_certs": "cacert.pem"}})  # for fix pyinstall error: cafile, capath and cadata cannot be all omitted
+        
+        # Adicionar parâmetros para melhorar a estabilidade da conexão
+        self.websocket_thread = threading.Thread(
+            target=self.websocket.run_forever,
+            kwargs={
+                'ping_interval': 30,
+                'ping_timeout': 25,
+                'origin': 'https://iqoption.com',
+                'sslopt': {"cert_reqs": ssl.CERT_NONE},
+                'skip_utf8_validation': True
+            }
+        )
         self.websocket_thread.daemon = True
         self.websocket_thread.start()
-        while True:
-            try:
-                if global_value.check_websocket_if_error:
-                    return False, global_value.websocket_error_reason
-                if global_value.check_websocket_if_connect == 0:
-                    return False, "Websocket connection closed."
-                elif global_value.check_websocket_if_connect == 1:
-                    return True, None
-            except:
-                pass
-
-            pass
+        
+        # Aguardar o estabelecimento da conexão com timeout
+        start_time = time.time()
+        max_timeout = 15  # Tempo máximo para aguardar a conexão (segundos)
+        
+        while global_value.check_websocket_if_connect != 1 and time.time() - start_time < max_timeout:
+            # Verificar se houve erro na conexão
+            if global_value.check_websocket_if_error:
+                error_reason = global_value.websocket_error_reason if global_value.websocket_error_reason else "Erro desconhecido"
+                logger = logging.getLogger(__name__)
+                logger.error(f"Erro na conexão WebSocket: {error_reason}")
+                return False, error_reason
+                
+            time.sleep(0.2)
+            
+        # Verificar se a conexão foi estabelecida
+        if global_value.check_websocket_if_connect != 1:
+            logger = logging.getLogger(__name__)
+            logger.error("Timeout ao estabelecer conexão WebSocket")
+            return False, "Timeout ao estabelecer conexão WebSocket"
+            
+        # Pequena pausa para estabilização após conexão
+        time.sleep(0.5)
+        
+        return True, None
 
     # @tokensms.setter
     def setTokenSMS(self, response):
@@ -823,65 +898,159 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
     def send_ssid(self):
         self.profile.msg = None
         self.ssid(global_value.SSID)  # pylint: disable=not-callable
+        
+        # Adicionar limite de tempo para aguardar resposta do perfil
+        ssid_start_time = time.time()
+        ssid_max_wait = 10  # Tempo máximo para aguardar a resposta do perfil (10 segundos)
+        
         while self.profile.msg == None:
-            pass
+            # Verificar se excedeu o tempo limite
+            if time.time() - ssid_start_time > ssid_max_wait:
+                logging.warning("Tempo limite excedido ao aguardar resposta do perfil após envio do SSID")
+                return False
+                
+            # Pequena pausa para reduzir uso de CPU
+            time.sleep(0.1)
+            
         if self.profile.msg == False:
             return False
         else:
             return True
 
     def connect(self):
-
         global_value.ssl_Mutual_exclusion = False
         global_value.ssl_Mutual_exclusion_write = False
         """Method for connection to IQ Option API."""
+        logger = logging.getLogger(__name__)
+        
         try:
+            # Fechar conexão anterior se existir
             self.close()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Erro ao fechar conexão anterior: {e}")
+                
+        # Iniciar websocket
+        logger.info("Iniciando conexão WebSocket...")
         check_websocket, websocket_reason = self.start_websocket()
 
         if check_websocket == False:
+            logger.error(f"Falha ao iniciar WebSocket: {websocket_reason}")
             return check_websocket, websocket_reason
 
-        # doing temp ssid reconnect for speed up
+        # Tentar reconexão usando SSID existente para acelerar
         if global_value.SSID != None:
-
+            logger.info("Tentando reconexão com SSID existente...")
             check_ssid = self.send_ssid()
 
             if check_ssid == False:
-                # ssdi time out need reget,if sent error ssid,the weksocket will close by iqoption server
+                logger.info("SSID existente inválido ou expirado. Obtendo novo SSID...")
+                # SSID inválido ou expirado, precisamos obter um novo
                 response = self.get_ssid()
+                
+                if isinstance(response, Exception):
+                    logger.error(f"Erro ao obter SSID: {response}")
+                    self.close()
+                    return False, str(response)
+                    
                 try:
-                    global_value.SSID = response.cookies["ssid"]
-                except:
-                    return False, response.text
+                    # Se a resposta for um objeto Response com cookies
+                    if hasattr(response, 'cookies') and "ssid" in response.cookies:
+                        global_value.SSID = response.cookies["ssid"]
+                        logger.info("Novo SSID obtido com sucesso")
+                    # Se for uma resposta de erro
+                    elif hasattr(response, 'text'):
+                        try:
+                            # Tentar interpretar como JSON
+                            error_json = json.loads(response.text)
+                            if "code" in error_json:
+                                error_code = error_json.get("code")
+                                error_message = error_json.get("message", "Erro desconhecido")
+                                
+                                if error_code == "invalid_credentials":
+                                    return False, f"Credenciais inválidas: {error_message}"
+                                else:
+                                    return False, f"Erro de autenticação ({error_code}): {error_message}"
+                        except:
+                            # Se não for JSON, retorna o texto cru
+                            return False, f"Erro na autenticação: {response.text}"
+                    else:
+                        return False, "Formato de resposta desconhecido na autenticação"
+                except Exception as e:
+                    logger.error(f"Erro ao processar resposta de autenticação: {e}")
+                    self.close()
+                    return False, f"Erro ao processar autenticação: {str(e)}"
+                    
                 atexit.register(self.logout)
                 self.start_websocket()
                 self.send_ssid()
-
-        # the ssid is None need get ssid
         else:
+            # SSID não existe, precisamos obter um
+            logger.info("Obtendo SSID para nova sessão...")
             response = self.get_ssid()
-            try:
-                global_value.SSID = response.cookies["ssid"]
-            except:
+            
+            if isinstance(response, Exception):
+                logger.error(f"Erro ao obter SSID: {response}")
                 self.close()
-                return False, response.text
+                return False, str(response)
+                
+            try:
+                # Se a resposta for um objeto Response com cookies
+                if hasattr(response, 'cookies') and "ssid" in response.cookies:
+                    global_value.SSID = response.cookies["ssid"]
+                    logger.info("SSID obtido com sucesso")
+                # Se for uma resposta de erro em formato JSON
+                elif hasattr(response, 'text'):
+                    try:
+                        # Tentar interpretar como JSON
+                        error_json = json.loads(response.text)
+                        if "code" in error_json:
+                            error_code = error_json.get("code")
+                            error_message = error_json.get("message", "Erro desconhecido")
+                            
+                            if error_code == "invalid_credentials":
+                                return False, f"Credenciais inválidas: {error_message}"
+                            else:
+                                return False, f"Erro de autenticação ({error_code}): {error_message}"
+                    except:
+                        # Se não for JSON, retorna o texto cru
+                        return False, f"Erro na autenticação: {response.text}"
+                else:
+                    return False, "Formato de resposta desconhecido na autenticação"
+            except Exception as e:
+                logger.error(f"Erro ao processar resposta de autenticação: {e}")
+                self.close()
+                return False, f"Erro ao processar autenticação: {str(e)}"
+                
             atexit.register(self.logout)
             self.send_ssid()
 
-        # set ssis cookie
+        # Definir cookie SSID para as requisições HTTP
         requests.utils.add_dict_to_cookiejar(
             self.session.cookies, {"ssid": global_value.SSID})
+        logger.debug(f"Cookies da sessão após SSID: {dict(self.session.cookies.get_dict())}")
 
+        # Aguarda até receber o timestamp do servidor, com timeout
         self.timesync.server_timestamp = None
+        timestamp_start_time = time.time()
+        timestamp_max_wait = 10  # Tempo máximo para aguardar o timestamp (10 segundos)
+        
+        logger.info("Aguardando timestamp do servidor...")
         while True:
+            # Verificar se excedeu o tempo limite
+            if time.time() - timestamp_start_time > timestamp_max_wait:
+                logging.warning("Tempo limite excedido ao aguardar o timestamp do servidor")
+                return False, "Timeout ao aguardar o timestamp do servidor. Tente novamente."
+                
             try:
                 if self.timesync.server_timestamp != None:
+                    logger.info(f"Timestamp do servidor recebido: {self.timesync.server_timestamp}")
                     break
-            except:
-                pass
+            except Exception as e:
+                logging.error(f"Erro ao verificar o timestamp: {e}")
+                
+            # Pequena pausa para reduzir uso de CPU
+            time.sleep(0.1)
+            
         return True, None
 
     def connect2fa(self, sms_code):
@@ -897,8 +1066,26 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         return True, None
 
     def close(self):
-        self.websocket.close()
-        self.websocket_thread.join()
+        """Fechar a conexão WebSocket de forma segura."""
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # Verificar se websocket existe antes de tentar fechar
+            if hasattr(self, 'websocket') and self.websocket:
+                self.websocket.close()
+                logger.debug("WebSocket fechado com sucesso")
+            else:
+                logger.debug("Não há WebSocket ativo para fechar")
+                
+            # Verificar se a thread existe antes de tentar encerrar
+            if hasattr(self, 'websocket_thread') and self.websocket_thread and self.websocket_thread.is_alive():
+                self.websocket_thread.join(timeout=1.0)  # Aguardar no máximo 1 segundo
+                logger.debug("Thread WebSocket encerrada com sucesso")
+            else:
+                logger.debug("Não há thread WebSocket ativa para encerrar")
+                
+        except Exception as e:
+            logger.warning(f"Erro ao fechar conexão: {e}")
 
     def websocket_alive(self):
         return self.websocket_thread.is_alive()

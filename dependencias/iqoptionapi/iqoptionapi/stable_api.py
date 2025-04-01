@@ -85,10 +85,43 @@ class IQ_Option:
             pass
             # logging.error('**warning** self.api.close() fail')
 
+        # Configurações de inicialização
         self.api = IQOptionAPI(
             "iqoption.com", self.email, self.password)
         check = None
 
+        # Pré-requisito: Visitar a página de login para obter cookies
+        try:
+            logging.info("Visitando página de login para obter cookies...")
+            # Simular uma requisição GET para obter cookies iniciais
+            response = self.api.session.get(
+                "https://iqoption.com/pt/login",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+                }
+            )
+            if response.status_code != 200:
+                logging.warning(f"Falha ao visitar página de login: {response.status_code}")
+        except Exception as e:
+            logging.error(f"Erro ao obter cookies iniciais: {e}")
+
+        # Inicializar dados da aplicação para simular comportamento do navegador
+        try:
+            logging.info("Inicializando dados da aplicação...")
+            try:
+                app_init_response = self.api.appinit.get_app_init()
+                if app_init_response.status_code != 200:
+                    logging.warning(f"Falha ao inicializar aplicação: {app_init_response.status_code}")
+                else:
+                    logging.info("Aplicação inicializada com sucesso")
+            except AttributeError:
+                logging.warning("Método get_app_init não encontrado. Pulando esta etapa.")
+                # Continuamos mesmo sem a inicialização da aplicação
+        except Exception as e:
+            logging.error(f"Erro ao inicializar aplicação: {e}")
+        
         # 2FA--
         if sms_code is not None:
             self.api.setTokenSMS(self.resp_sms)
@@ -97,57 +130,87 @@ class IQ_Option:
                 return status, reason
         # 2FA--
 
+        # Configurar a sessão com headers e cookies
         self.api.set_session(headers=self.SESSION_HEADER,
                              cookies=self.SESSION_COOKIE)
 
-        check, reason = self.api.connect()
+        # Adicionar tempo limite para a conexão WebSocket
+        start_connect_time = time.time()
+        max_connect_time = 30  # 30 segundos para timeout da conexão
+        max_tentativas = 3  # Número máximo de tentativas de conexão
+        tentativa_atual = 0
+        
+        while tentativa_atual < max_tentativas:
+            tentativa_atual += 1
+            logging.info(f"Tentativa de conexão {tentativa_atual}/{max_tentativas}")
+            
+            # Iniciar a conexão
+            check, reason = self.api.connect()
+            
+            # Se conectou com sucesso, sair do loop
+            if check:
+                break
+                
+            # Se for a última tentativa e falhou, retornar o erro
+            if tentativa_atual == max_tentativas:
+                logging.error(f"Todas as {max_tentativas} tentativas de conexão falharam")
+                break
+                
+            # Se ainda temos tentativas, esperar um pouco antes da próxima
+            time.sleep(2)  # Aguardar 2 segundos entre tentativas
+        
+        # Verificar timeout
+        if not check and time.time() - start_connect_time > max_connect_time:
+            return False, "Tempo limite de conexão excedido. Verifique sua conexão com a internet."
 
-        if check == True:
+        if check:
             # -------------reconnect subscribe_candle
             self.re_subscribe_stream()
 
             # ---------for async get name: "position-changed", microserviceName
+            # Adicionar timeout para aguardar o balance_id
+            balance_wait_start = time.time()
+            balance_wait_max = 10  # 10 segundos para aguardar o balance_id
+            
             while global_value.balance_id == None:
-                pass
+                if time.time() - balance_wait_start > balance_wait_max:
+                    logging.warning("Timeout aguardando balance_id. Continuando assim mesmo.")
+                    break
+                time.sleep(0.1)  # Pequena pausa para não consumir CPU
 
-            self.position_change_all(
-                "subscribeMessage", global_value.balance_id)
-
-            self.order_changed_all("subscribeMessage")
+            # Se temos um balance_id, podemos prosseguir com a subscrição
+            if global_value.balance_id is not None:
+                self.position_change_all(
+                    "subscribeMessage", global_value.balance_id)
+                self.order_changed_all("subscribeMessage")
+            else:
+                logging.warning("Não foi possível obter balance_id, mas continuando com a conexão.")
+                
             self.api.setOptions(1, True)
 
-            """
-            self.api.subscribe_position_changed(
-                "position-changed", "multi-option", 2)
-
-            self.api.subscribe_position_changed(
-                "trading-fx-option.position-changed", "fx-option", 3)
-
-            self.api.subscribe_position_changed(
-                "position-changed", "crypto", 4)
-
-            self.api.subscribe_position_changed(
-                "position-changed", "forex", 5)
-
-            self.api.subscribe_position_changed(
-                "digital-options.position-changed", "digital-option", 6)
-
-            self.api.subscribe_position_changed(
-                "position-changed", "cfd", 7)
-            """
-
-            # self.get_balance_id()
             return True, None
         else:
-            if json.loads(reason)['code'] == 'verify':
-                response = self.api.send_sms_code(json.loads(reason)['token'])
+            # Verificar se reason é um JSON válido antes de tentar decodificar
+            try:
+                error_data = json.loads(reason)
+                if error_data.get('code') == 'verify':
+                    response = self.api.send_sms_code(error_data['token'])
 
-                if response.json()['code'] != 'success':
-                    return False, response.json()['message']
+                    if response.json()['code'] != 'success':
+                        return False, response.json()['message']
 
-                # token_sms
-                self.resp_sms = response
-                return False, "2FA"
+                    # token_sms
+                    self.resp_sms = response
+                    return False, "2FA"
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                # Se não for um JSON válido ou se for None, retorna a mensagem original
+                if isinstance(reason, str) and "name resolution" in reason:
+                    return False, "Falha na conexão de rede: Não foi possível conectar ao servidor IQ Option. Verifique sua conexão com a internet."
+                if reason is None or reason == "":
+                    return False, "Servidor IQ Option não respondeu. Verifique sua conexão ou tente novamente mais tarde."
+                    
+                return False, str(reason)
+            
             return False, reason
 
     # self.update_ACTIVES_OPCODE()

@@ -25,29 +25,33 @@ class LoginIQOption:
     """Classe para gerenciar o login e seleção de conta na IQ Option"""
     
     def __init__(self):
-        """Inicializa o gerenciador de login"""
+        """
+        Inicializa o gerenciador de login
+        """
         self.api = None
         self.email = None
-        self.tipo_conta = None # Armazena o último tipo selecionado com sucesso
+        self.conectado = False
+        self.tipo_conta = None
         self.saldo = 0.0
         self.moeda = None
-        self.conectado = False
+        self.ultimo_erro = None # Para armazenar a última mensagem de erro
     
     def conectar(self, email, senha, tipo_conta="TREINAMENTO", conta_id_db=None):
         """
-        Realiza o login na IQ Option, tenta definir o tipo de conta inicial, 
-        e atualiza o perfil do usuário no banco de dados local.
+        Conecta à API IQ Option e seleciona o tipo de conta desejado.
         
         Parâmetros:
-            email (str): Email da conta
-            senha (str): Senha da conta
-            tipo_conta (str): REAL, TREINAMENTO ou TORNEIO (Tipo desejado para iniciar)
-            conta_id_db (int, optional): ID da conta no banco de dados local para atualização do perfil.
-                                         Se None, a atualização do perfil será pulada.
-            
+            email (str): Email cadastrado na IQ Option
+            senha (str): Senha cadastrada na IQ Option
+            tipo_conta (str): REAL, TREINAMENTO ou TORNEIO
+            conta_id_db (int): ID da conta no banco de dados local (para atualização de perfil)
+        
         Retorna:
-            bool: True se o login foi bem-sucedido, False caso contrário
+            bool: True se a conexão foi bem-sucedida, False caso contrário
         """
+        # Limpa o erro anterior
+        self.ultimo_erro = None
+        
         logger.info(f"Iniciando conexão com a IQ Option para o email: {email}")
         
         # Normaliza o tipo de conta desejado
@@ -112,7 +116,21 @@ class LoginIQOption:
             logger.info(f"Conexão finalizada. Conta interna: {self.tipo_conta}, Saldo: {self.saldo} {self.moeda}")
             return True
         else:
-            logger.error(f"Falha na conexão WebSocket: {motivo}")
+            # Registra o erro de forma mais detalhada
+            if isinstance(motivo, str):
+                if "Falha na conexão de rede" in motivo:
+                    logger.error(f"Erro de conexão: {motivo}")
+                    self.ultimo_erro = motivo
+                elif motivo == "2FA":
+                    logger.info("Autenticação de dois fatores solicitada pela API")
+                    self.ultimo_erro = "Autenticação de dois fatores solicitada. Entre em contato com o administrador."
+                else:
+                    logger.error(f"Falha na conexão WebSocket: {motivo}")
+                    self.ultimo_erro = f"Falha na conexão: {motivo}"
+            else:
+                logger.error(f"Falha na conexão WebSocket com motivo desconhecido: {motivo}")
+                self.ultimo_erro = "Falha na conexão com motivo desconhecido."
+            
             self.conectado = False
             return False
     
@@ -223,7 +241,8 @@ class LoginIQOption:
             "saldo": self.saldo,
             "moeda": self.moeda,
             "conectado": self.conectado,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ultimo_erro": self.ultimo_erro
         }
 
 # Função auxiliar foi removida pois o fluxo mudou 

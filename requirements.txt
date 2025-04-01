@@ -9,7 +9,7 @@
 
 # Dependências específicas da iqoptionapi
 requests>=2.24.0
-websocket-client==0.56.0
+websocket-client==1.6.4
 python-dateutil>=2.8.1
 
 # Desenvolvimento e testes

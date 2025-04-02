@@ -248,7 +248,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         :returns: The instance of :class:`Response <requests.Response>`.
         """
         logger = logging.getLogger(__name__)
-        
+
         # Adicionar cabeçalhos gerais caso não existam
         if headers is None:
             headers = {}
@@ -261,7 +261,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         logger.debug(f"URL: {method} {url}")
         logger.debug(f"Headers completos: {json.dumps(dict(request_headers), indent=2)}")
         logger.debug(f"Cookies: {json.dumps(dict(self.session.cookies.get_dict()), indent=2)}")
-        
+
         # Converter dados para JSON se for um dicionário
         if isinstance(data, dict):
             data_json = json.dumps(data)
@@ -273,12 +273,12 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
 
         try:
             response = self.session.request(method=method,
-                                           url=url,
-                                           data=data_json,
-                                           params=params,
-                                           headers=request_headers,
-                                           proxies=self.proxies,
-                                           timeout=30)
+                                            url=url,
+                                            data=data_json,
+                                            params=params,
+                                            headers=request_headers,
+                                            proxies=self.proxies,
+                                            timeout=30)
             
             # Log da resposta
             logger.debug(f"Status da resposta: {response.status_code}")
@@ -291,7 +291,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
             except:
                 # Se não for JSON, mostra apenas os primeiros bytes para debug
                 logger.debug(f"Conteúdo da resposta (não-JSON): {response.text[:200]}...")
-            
+
             # Log mais limpo para erros
             if response.status_code >= 400:
                 logger.error(f"Erro HTTP: {response.status_code} - {response.text}")
@@ -830,7 +830,7 @@ class IQOptionAPI(object):  # pylint: disable=too-many-instance-attributes
         """Method for start websocket connection."""
         requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
         self.websocket_client = WebsocketClient(self)
-        
+
         # Adicionar parâmetros para melhorar a estabilidade da conexão
         self.websocket_thread = threading.Thread(
             target=self.websocket.run_forever,

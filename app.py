@@ -13,25 +13,6 @@ import getpass
 import platform
 from datetime import datetime
 
-# Importa módulos da aplicação
-from iqoption import LoginIQOption, listar_ativos_abertos_com_payout
-from data import (
-    inicializar_banco_dados,
-    verificar_contas_existentes,
-    listar_contas,
-    verificar_email_existente,
-    cadastrar_conta_db,
-    obter_detalhes_conta,
-    obter_nome_conta,
-    deletar_conta_db,
-    registrar_acesso,
-    obter_saldos_conta,
-    atualizar_saldos_conta,
-    obter_id_conta_atual,
-    atualizar_perfil_conta_iq,
-    obter_perfil_conta_local,
-)
-
 # --- Constantes --- #
 LOG_DIR = "log"
 LOG_PATH = os.path.join(LOG_DIR, "sigmatrader.log")
@@ -61,6 +42,33 @@ try:
     logging.getLogger('websocket').setLevel(logging.WARNING)  # Silencia os logs de ping do websocket
 except Exception as e_log:
     logger.warning(f"Não foi possível silenciar logger(s) da biblioteca: {e_log}")
+
+# Importa módulos da aplicação
+from iqoption import LoginIQOption, listar_ativos_abertos_com_payout
+from data import (
+    inicializar_banco_dados,
+    verificar_contas_existentes,
+    listar_contas,
+    verificar_email_existente,
+    cadastrar_conta_db,
+    obter_detalhes_conta,
+    obter_nome_conta,
+    deletar_conta_db,
+    registrar_acesso,
+    obter_saldos_conta,
+    atualizar_saldos_conta,
+    obter_id_conta_atual,
+    atualizar_perfil_conta_iq,
+    obter_perfil_conta_local,
+)
+
+# Para análise de ativos
+try:
+    from iqoption.analisador_ativos import interface_analise_ativos
+    ANALISE_ATIVOS_DISPONIVEL = True
+except ImportError:
+    ANALISE_ATIVOS_DISPONIVEL = False
+    logger.warning("Módulo de análise de ativos não disponível. Verifique as dependências.")
 
 # --- Funções de Interface Auxiliares --- #
 def print_header(title):
@@ -278,50 +286,78 @@ def selecionar_mercado_ativo():
         else:
             print_error("Opção inválida. Escolha 1, 2, 3 ou 4.")
 
-def exibir_ativos_abertos(iq_session, mercado_foco):
-    """Busca e exibe os ativos abertos para o mercado selecionado, com payout."""
-    print_header(f"Ativos Abertos - {mercado_foco}")
-    print_info("Buscando...")
+def exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo=0):
+    """
+    Exibe ativos abertos para o mercado informado, ordenados por payout
     
-    # Chama a função que retorna lista de tuplas (ativo, payout)
-    ativos_com_detalhes = listar_ativos_abertos_com_payout(iq_session.api, mercado_foco=mercado_foco) 
+    Args:
+        iq_session: Sessão IQ Option conectada
+        mercado_foco: Mercado a ser exibido
+        payout_minimo: Payout mínimo para filtrar ativos (0 = mostrar todos)
+    """
+    print("\n" + "=" * 60)
+    print(f"# ATIVOS ABERTOS - {mercado_foco} #".center(60))
+    print("=" * 60)
+    print("\n[INFO] Buscando...")
     
-    if ativos_com_detalhes is None:
-        print_error("Não foi possível obter a lista de ativos/detalhes. Verifique a conexão ou os logs.")
+    ativos = listar_ativos_abertos_com_payout(iq_session.api, mercado_foco)
+    
+    if not ativos:
+        print(f"\n[ERRO] Nenhum ativo disponível para {mercado_foco}")
         return
-        
-    if not ativos_com_detalhes:
-        print_info(f"Nenhum ativo encontrado aberto para o mercado {mercado_foco}.") 
-        return
-        
-    # Define o título com base na disponibilidade de detalhes
-    contem_payout = any(p is not None for _, p in ativos_com_detalhes)
     
-    titulo_sucesso = f"Ativos {mercado_foco} ({len(ativos_com_detalhes)})"
-    detalhes_str = []
-    if contem_payout: detalhes_str.append("Payout")
-
-    if detalhes_str:
-        titulo_sucesso += f" - Ordenado por Payout ({', '.join(detalhes_str)})"
+    # Se um payout mínimo for especificado, filtra os ativos
+    ativos_originais = len(ativos)
+    if payout_minimo > 0:
+        ativos_filtrados = [(ativo, payout) for ativo, payout in ativos if payout >= payout_minimo]
+        ativos_removidos = ativos_originais - len(ativos_filtrados)
+        ativos = ativos_filtrados
     else:
-        titulo_sucesso += " - Abertos"
-    print_success(titulo_sucesso)
+        ativos_removidos = 0
     
-    # Formatação em colunas 
+    print(f"\n[SUCESSO] Ativos {mercado_foco} ({len(ativos)})", end="")
+    
+    if payout_minimo > 0:
+        print(f" - Payout Mínimo: {payout_minimo}% ({ativos_removidos} ativos filtrados)")
+    else:
+        print(" - Ordenado por Payout (Payout)")
+    
+    # Formata a exibição dos ativos em múltiplas colunas
+    formatar_lista_ativos(ativos)
+
+def formatar_lista_ativos(ativos):
+    """
+    Formata a exibição de uma lista de ativos em colunas para melhor visualização
+    
+    Args:
+        ativos: Lista de tuplas (ativo, payout)
+    """
+    # Função auxiliar para formatar cada item
     def formatar_item(ativo, payout):
-        base = f"{ativo}"
         if payout is not None:
-            base += f" ({payout}%)"
-        return base
-        
-    itens_formatados = [formatar_item(a, p) for a, p in ativos_com_detalhes]
-    col_width = max(len(item) for item in itens_formatados) + 2 # Espaço extra
-    max_cols = 3 # Pode voltar para 3 colunas
-    num_cols = min(max_cols, max(1, 100 // col_width))
+            return f"{ativo} ({payout}%)"
+        return ativo
     
-    for i in range(0, len(itens_formatados), num_cols):
-        linha_itens = itens_formatados[i:i+num_cols]
-        print("    " + "".join(item.ljust(col_width) for item in linha_itens))
+    # Formata cada item e determina largura da coluna
+    itens_formatados = [formatar_item(a, p) for a, p in ativos]
+    col_width = max(len(item) for item in itens_formatados) + 2  # Adiciona espaço
+    max_cols = 3  # Número de colunas para exibição
+    
+    # Calcula número de linhas necessárias
+    num_itens = len(itens_formatados)
+    num_linhas = (num_itens + max_cols - 1) // max_cols
+    
+    # Exibe em formato de coluna
+    for linha in range(num_linhas):
+        linha_str = "    "  # Indentação
+        for col in range(max_cols):
+            idx = linha + col * num_linhas
+            if idx < num_itens:
+                item = itens_formatados[idx].ljust(col_width)
+                linha_str += item
+        print(linha_str)
+    
+    print()  # Nova linha ao final
 
 def menu_gerenciar_contas():
     """
@@ -396,86 +432,136 @@ def menu_gerenciar_contas():
             press_enter_to_continue() # Pausa para o usuário ler
 
 def menu_principal(iq_session, conta_id, tipo_conta_foco, mercado_foco):
-    """Exibe o menu principal focado no tipo de conta e mercado."""
+    """
+    Menu principal da aplicação
+    
+    Args:
+        iq_session: Sessão IQ Option conectada
+        conta_id: ID da conta local
+        tipo_conta_foco: Tipo de conta atual (real ou prática)
+        mercado_foco: Mercado atual em foco
+    
+    Returns:
+        Tupla (bool, str, str) indicando se deve continuar, tipo_conta e mercado
+    """
+    # Configuração padrão de payout mínimo
+    payout_minimo = 85  # Valor padrão de 85%
+    
     while True:
-        info = iq_session.obter_info_conta() # Pega info atual da API (pode ter mudado saldo)
-        saldos_db = obter_saldos_conta(conta_id) # Pega saldos do DB
+        # Obter informações atualizadas
+        tipo_conta_atual = iq_session.api.get_balance_mode()
+        saldo_api = iq_session.api.get_balance()
+        moeda_api = iq_session.api.get_currency()
+        saldos_db = obter_saldos_conta(conta_id)
+        saldo_foco_db = obter_saldo_foco_db(saldos_db, tipo_conta_foco)
         
-        # Determina qual saldo mostrar com base no foco
-        saldo_foco_db = 0.0
-        moeda_db = "USD"
-        if saldos_db:
-            moeda_db = saldos_db.get("moeda", "USD")
-            if tipo_conta_foco == "REAL": saldo_foco_db = saldos_db.get("saldo_real", 0.0)
-            elif tipo_conta_foco == "TREINAMENTO": saldo_foco_db = saldos_db.get("saldo_treinamento", 0.0)
-            elif tipo_conta_foco == "TORNEIO": saldo_foco_db = saldos_db.get("saldo_torneio", 0.0)
-
-        print_header(f"MENU: {tipo_conta_foco} | {mercado_foco}")
-        print(f"  IQ Option: {info.get('tipo_conta', 'N/A')} ({info.get('saldo', 0.0):.2f} {info.get('moeda', '')})  |  BD Saldo Foco: {saldo_foco_db:.2f}")
-        print(SEPARATOR)
-        
+        print("\n" + "=" * 60)
+        print(f"# MENU: {tipo_conta_foco} | {mercado_foco} #".center(60))
+        print("=" * 60)
+        print(f"  IQ Option: {tipo_conta_atual} ({saldo_api:.2f} {moeda_api})  |  BD Saldo Foco: {saldo_foco_db:.2f}")
+        print("=" * 60)
         print("  Opções:")
         print(f"  1. Sincronizar Saldo {tipo_conta_foco} no BD")
         print(f"  2. Listar Ativos {mercado_foco}")
-        print("  3. Trocar Tipo Conta (Sessão)")
-        print("  4. Trocar Mercado (Sessão)")
-        print("  5. Detalhes da Conta")
+        print(f"  3. Analisar Ativos {mercado_foco}")
+        print(f"  4. Trocar Tipo Conta (Sessão)")
+        print(f"  5. Trocar Mercado (Sessão)")
+        print(f"  6. Detalhes da Conta")
+        print(f"  7. Configurar Payout Mínimo (Atual: {payout_minimo}%)")
         print("  0. Deslogar")
         
-        opcao = input("\n  Escolha: ").strip()
+        escolha = input("\n  Escolha: ").strip()
         
-        if opcao == '1':
-            if info.get('tipo_conta') == tipo_conta_foco:
-                print_info(f"Sincronizando saldo {tipo_conta_foco}...")
-                if atualizar_saldos_conta(conta_id, tipo_conta_foco, info['saldo'], info['moeda']):
-                    print_success("Saldo BD atualizado!")
-                else: print_error("Falha ao atualizar BD.")
-            else: print_error(f"Conta ativa ({info.get('tipo_conta')}) não é a de foco ({tipo_conta_foco}). Use opção 3.")
+        if escolha == "1":
+            # Sincroniza saldo
+            if tipo_conta_foco == tipo_conta_atual:
+                atualizar_saldos_conta(conta_id, tipo_conta_foco, saldo_api, moeda_api)
+                print(f"\n  ✅ Saldo {tipo_conta_foco} atualizado para {saldo_api} {moeda_api}")
+            else:
+                print(f"\n  ⚠️ Você está na conta {tipo_conta_atual}, mas quer atualizar {tipo_conta_foco}")
+                confirma = input("  Deseja trocar para a conta desejada primeiro? (S/N): ").strip().upper()
+                if confirma == "S":
+                    # Trocar tipo de conta e depois sincroniza
+                    if iq_session.trocar_tipo_conta(tipo_conta_foco):
+                        novo_saldo = iq_session.api.get_balance()
+                        nova_moeda = iq_session.api.get_currency()
+                        atualizar_saldos_conta(conta_id, tipo_conta_foco, novo_saldo, nova_moeda)
+                        print(f"\n  ✅ Saldo {tipo_conta_foco} atualizado para {novo_saldo} {nova_moeda}")
+                    else:
+                        print(f"\n  ❌ Não foi possível trocar para a conta {tipo_conta_foco}")
+            
             press_enter_to_continue()
             
-        elif opcao == '2':
-            exibir_ativos_abertos(iq_session, mercado_foco)
+        elif escolha == "2":
+            # Listar ativos e seus payouts
+            exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo)
             press_enter_to_continue()
-
-        elif opcao == '3':
-            # Usa a função de seleção de tipo, mas não a de interface completa
-            print("\n  Escolha novo tipo:")
-            print("    1. Treinamento")
-            print("    2. Real")
-            print("    3. Torneio")
-            tipo_opcao = input("  Opção: ").strip()
-            novo_tipo = TIPOS_CONTA_MAP.get(tipo_opcao)
-            if novo_tipo:
-                print_info(f"Tentando alterar para conta {novo_tipo}...")
-                if iq_session._selecionar_tipo_conta(novo_tipo):
-                    print_success(f"Conta IQ alterada para {novo_tipo}.")
-                    tipo_conta_foco = novo_tipo # Atualiza o foco
-                    info_atualizada = iq_session.obter_info_conta() # Pega novo saldo
-                    atualizar_saldos_conta(conta_id, novo_tipo, info_atualizada['saldo'], info_atualizada['moeda']) # Atualiza DB
-                else: print_error(f"Falha ao alterar para {novo_tipo}.")
-            else: print_error("Opção inválida.")
+            
+        elif escolha == "3":
+            # Analisar ativos
+            analisar_ativos_operacao(iq_session, mercado_foco, payout_minimo)
             press_enter_to_continue()
-
-        elif opcao == '4':
-            # Permite trocar o MERCADO para a sessão atual
+            
+        elif escolha == "4":
+            # Trocar tipo de conta
+            novo_tipo = selecionar_tipo_conta_interface(tipo_conta_foco)
+            if novo_tipo != tipo_conta_foco:
+                if iq_session.trocar_tipo_conta(novo_tipo):
+                    print(f"\n  ✅ Tipo de conta alterado para {novo_tipo}")
+                    tipo_conta_foco = novo_tipo
+                else:
+                    print(f"\n  ❌ Falha ao trocar tipo de conta")
+                press_enter_to_continue()
+                
+        elif escolha == "5":
+            # Trocar mercado foco
             novo_mercado = selecionar_mercado_ativo()
-            if novo_mercado:
-                mercado_foco = novo_mercado # Atualiza o foco da sessão
-            press_enter_to_continue()
-
-        elif opcao == '5':
-            # Busca os dados do perfil local antes de exibir
+            if novo_mercado != mercado_foco:
+                mercado_foco = novo_mercado
+                print(f"\n  ✅ Mercado alterado para {mercado_foco}")
+                press_enter_to_continue()
+                
+        elif escolha == "6":
+            # Ver detalhes da conta
+            info_api = {
+                'tipo_conta': tipo_conta_atual,
+                'saldo': saldo_api,
+                'moeda': moeda_api
+            }
             perfil_local = obter_perfil_conta_local(conta_id)
-            exibir_detalhes_conta(info, saldos_db, perfil_local) # Passa os dados do perfil
+            exibir_detalhes_conta(info_api, saldos_db, perfil_local)
             press_enter_to_continue()
             
-        elif opcao == '0':
-            print_info("Deslogando e encerrando aplicação...")
-            break # Sai do loop do menu principal
-        
-        else:
-            print_error("Opção inválida.")
+        elif escolha == "7":
+            # Configurar payout mínimo
+            print("\n" + "=" * 60)
+            print("# CONFIGURAÇÃO DE PAYOUT MÍNIMO #".center(60))
+            print("=" * 60)
+            print(f"  Payout mínimo atual: {payout_minimo}%")
+            print("  Digite o novo valor de payout mínimo (0-100):")
+            print("  * Ativos com payout abaixo deste valor serão ignorados na análise")
+            print("  * Valor recomendado: 85% ou maior")
+            
+            try:
+                novo_payout = int(input("\n  Novo payout mínimo (%): ").strip())
+                if 0 <= novo_payout <= 100:
+                    payout_minimo = novo_payout
+                    print(f"\n  ✅ Payout mínimo configurado para {payout_minimo}%")
+                else:
+                    print("\n  ❌ Valor inválido. Deve estar entre 0 e 100.")
+            except ValueError:
+                print("\n  ❌ Valor inválido. Digite apenas números.")
+                
             press_enter_to_continue()
+            
+        elif escolha == "0":
+            # Sair
+            return False, tipo_conta_foco, mercado_foco
+        else:
+            print("\n  ❌ Opção inválida. Tente novamente.")
+            time.sleep(1)
+    
+    return True, tipo_conta_foco, mercado_foco
 
 def obter_saldo_foco_db(saldos_db, tipo_conta_foco):
     """Retorna o saldo do BD para o tipo de conta em foco."""
@@ -513,6 +599,70 @@ def exibir_detalhes_conta(info_api, saldos_db, perfil_local=None):
         # print(f"  Avatar URL:    {perfil_local.get('iq_avatar_url', 'N/A')}") # Descomentar se quiser mostrar a URL
     else:
         print("  Dados do perfil IQ Option ainda não sincronizados localmente.")
+
+def analisar_ativos_operacao(iq_session, mercado_foco, payout_minimo=85):
+    """
+    Interface para análise de ativos para operação
+    
+    Args:
+        iq_session: Sessão IQ Option conectada
+        mercado_foco: Mercado atual em foco
+        payout_minimo: Payout mínimo para considerar ativos (%)
+    """
+    print("\n" + "=" * 60)
+    print(f"# ANÁLISE DE ATIVOS - {mercado_foco} #".center(60))
+    print("=" * 60)
+    print(f"  Analisando ativos para identificar os melhores candidatos para operação...")
+    print(f"  Este processo pode levar alguns minutos, dependendo da quantidade de ativos e dados disponíveis.")
+    print("=" * 60)
+    
+    # Progresso formatado
+    def atualizar_progresso(percentual, mensagem=""):
+        progresso = "█" * int(percentual / 2) + "░" * (50 - int(percentual / 2))
+        print(f"\r[{progresso}] {percentual:.1f}% {mensagem}", end="", flush=True)
+        if percentual >= 100:
+            print()  # Nova linha
+    
+    # Verifica se tem ativos disponíveis
+    ativos_com_payout = listar_ativos_abertos_com_payout(iq_session.api, mercado_foco)
+    if not ativos_com_payout:
+        print(f"\n[ERRO] Nenhum ativo disponível para o mercado {mercado_foco}")
+        return None
+    
+    print(f"\n[INFO] Verificando {len(ativos_com_payout)} ativos disponíveis para análise...")
+    
+    # Importamos aqui para evitar dependência cíclica
+    from iqoption.analisador_ativos import interface_analise_ativos
+    
+    # Executa análise
+    df_metricas, caminho_html = interface_analise_ativos(
+        iq_session.api, 
+        mercado_foco, 
+        atualizar_progresso,
+        payout_minimo
+    )
+    
+    if df_metricas is not None and not df_metricas.empty:
+        print("\n[INFO] Análise concluída com sucesso!")
+        print(f"Total de ativos analisados: {len(df_metricas)}")
+        print(f"Payout mínimo considerado: {payout_minimo}%")
+        
+        # Mostra top 5 ativos
+        print("\nTop 5 ativos recomendados:")
+        print("-" * 60)
+        print(f"{'Ativo':<15} {'Payout':<10} {'Volatilidade':<15} {'Tendência':<15} {'Pontuação':<10}")
+        print("-" * 60)
+        
+        for i, (ativo, row) in enumerate(df_metricas.head(5).iterrows(), 1):
+            print(f"{ativo:<15} {row['payout']*100:<10.0f}% {row.get('volatilidade_nome', 'N/A'):<15} {row.get('tendencia_nome', 'N/A'):<15} {row['pontuacao']:<10.2f}")
+        
+        print("-" * 60)
+        
+        # Informa sobre o relatório HTML
+        if caminho_html:
+            print(f"\n[INFO] Relatório HTML detalhado salvo em: {caminho_html}")
+    else:
+        print("\n[ERRO] A análise não retornou resultados válidos.")
 
 def main():
     """Função principal da aplicação"""

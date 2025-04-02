@@ -12,6 +12,7 @@ import logging
 import getpass
 import platform
 from datetime import datetime
+import time
 
 # --- Constantes --- #
 LOG_DIR = "log"
@@ -62,13 +63,14 @@ from data import (
     obter_perfil_conta_local,
 )
 
-# Para análise de ativos
+# Importa módulos LSTM
 try:
-    from iqoption.analisador_ativos import interface_analise_ativos
-    ANALISE_ATIVOS_DISPONIVEL = True
+    from lstm.treinamento import treinar_modelo, atualizar_modelo
+    from lstm.predicao import executar_operacoes_lstm, analisar_ativo_lstm
+    LSTM_DISPONIVEL = True
 except ImportError:
-    ANALISE_ATIVOS_DISPONIVEL = False
-    logger.warning("Módulo de análise de ativos não disponível. Verifique as dependências.")
+    LSTM_DISPONIVEL = False
+    logger.warning("Módulos LSTM não disponíveis. Algumas funcionalidades estarão desabilitadas.")
 
 # --- Funções de Interface Auxiliares --- #
 def print_header(title):
@@ -286,44 +288,44 @@ def selecionar_mercado_ativo():
         else:
             print_error("Opção inválida. Escolha 1, 2, 3 ou 4.")
 
-def exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo=0):
-    """
-    Exibe ativos abertos para o mercado informado, ordenados por payout
+def exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo=0, timeframe=1):
+    """Exibe e retorna lista de ativos abertos para um mercado específico"""
+    print_header(f"Ativos Abertos - {mercado_foco}")
     
-    Args:
-        iq_session: Sessão IQ Option conectada
-        mercado_foco: Mercado a ser exibido
-        payout_minimo: Payout mínimo para filtrar ativos (0 = mostrar todos)
-    """
-    print("\n" + "=" * 60)
-    print(f"# ATIVOS ABERTOS - {mercado_foco} #".center(60))
-    print("=" * 60)
-    print("\n[INFO] Buscando...")
+    # Obter lista de ativos abertos com seus payouts
+    print("  Buscando ativos abertos e payouts...")
+    start_time = time.time()
     
-    ativos = listar_ativos_abertos_com_payout(iq_session.api, mercado_foco)
+    ativos = listar_ativos_abertos_com_payout(iq_session.api, mercado_foco, timeframe)
     
     if not ativos:
-        print(f"\n[ERRO] Nenhum ativo disponível para {mercado_foco}")
-        return
+        print("\n  Nenhum ativo disponível para o mercado selecionado.")
+        return []
+        
+    tempo_busca = time.time() - start_time
     
-    # Se um payout mínimo for especificado, filtra os ativos
-    ativos_originais = len(ativos)
+    # Filtrar por payout mínimo, se aplicável
     if payout_minimo > 0:
-        ativos_filtrados = [(ativo, payout) for ativo, payout in ativos if payout >= payout_minimo]
-        ativos_removidos = ativos_originais - len(ativos_filtrados)
-        ativos = ativos_filtrados
+        ativos_filtrados = [(ativo, payout) for ativo, payout in ativos 
+                           if payout is not None and payout >= payout_minimo]
     else:
-        ativos_removidos = 0
+        ativos_filtrados = ativos
     
-    print(f"\n[SUCESSO] Ativos {mercado_foco} ({len(ativos)})", end="")
+    # Exibir resultado
+    qtd_total = len(ativos)
+    qtd_filtrada = len(ativos_filtrados)
     
-    if payout_minimo > 0:
-        print(f" - Payout Mínimo: {payout_minimo}% ({ativos_removidos} ativos filtrados)")
-    else:
-        print(" - Ordenado por Payout (Payout)")
+    print(f"\n  ✅ Encontrados {qtd_total} ativos para {mercado_foco} (Timeframe: {timeframe} min)")
+    print(f"     {qtd_filtrada} atendem ao payout mínimo de {payout_minimo}%")
+    print(f"     Tempo para buscar: {tempo_busca:.2f} segundos")
     
-    # Formata a exibição dos ativos em múltiplas colunas
-    formatar_lista_ativos(ativos)
+    # Formatar e exibir a lista
+    print("\n  " + "-" * 50)
+    print(formatar_lista_ativos(ativos_filtrados))
+    print("  " + "-" * 50)
+    
+    press_enter_to_continue()
+    return ativos_filtrados
 
 def formatar_lista_ativos(ativos):
     """
@@ -331,6 +333,9 @@ def formatar_lista_ativos(ativos):
     
     Args:
         ativos: Lista de tuplas (ativo, payout)
+        
+    Returns:
+        String formatada com a lista de ativos em colunas
     """
     # Função auxiliar para formatar cada item
     def formatar_item(ativo, payout):
@@ -340,14 +345,19 @@ def formatar_lista_ativos(ativos):
     
     # Formata cada item e determina largura da coluna
     itens_formatados = [formatar_item(a, p) for a, p in ativos]
-    col_width = max(len(item) for item in itens_formatados) + 2  # Adiciona espaço
+    col_width = max(len(item) for item in itens_formatados) + 2 if itens_formatados else 0  # Adiciona espaço
     max_cols = 3  # Número de colunas para exibição
+    
+    # Verifica se não há itens
+    if not itens_formatados:
+        return "    Nenhum ativo encontrado"
     
     # Calcula número de linhas necessárias
     num_itens = len(itens_formatados)
     num_linhas = (num_itens + max_cols - 1) // max_cols
     
-    # Exibe em formato de coluna
+    # Cria formato de coluna como string
+    linhas = []
     for linha in range(num_linhas):
         linha_str = "    "  # Indentação
         for col in range(max_cols):
@@ -355,9 +365,9 @@ def formatar_lista_ativos(ativos):
             if idx < num_itens:
                 item = itens_formatados[idx].ljust(col_width)
                 linha_str += item
-        print(linha_str)
+        linhas.append(linha_str)
     
-    print()  # Nova linha ao final
+    return "\n".join(linhas)
 
 def menu_gerenciar_contas():
     """
@@ -445,9 +455,15 @@ def menu_principal(iq_session, conta_id, tipo_conta_foco, mercado_foco):
         Tupla (bool, str, str) indicando se deve continuar, tipo_conta e mercado
     """
     # Configuração padrão de payout mínimo
-    payout_minimo = 85  # Valor padrão de 85%
+    global payout_minimo, timeframe_padrao
+    payout_minimo = 85  # Percentual mínimo de lucro aceitável
+
+    # Configuração padrão de timeframe
+    timeframe_padrao = 1  # Timeframe em minutos (1, 5, 15, 30, 60, 240)
     
-    while True:
+    executando = True
+    
+    while executando:
         # Obter informações atualizadas
         tipo_conta_atual = iq_session.api.get_balance_mode()
         saldo_api = iq_session.api.get_balance()
@@ -463,11 +479,20 @@ def menu_principal(iq_session, conta_id, tipo_conta_foco, mercado_foco):
         print("  Opções:")
         print(f"  1. Sincronizar Saldo {tipo_conta_foco} no BD")
         print(f"  2. Listar Ativos {mercado_foco}")
-        print(f"  3. Analisar Ativos {mercado_foco}")
         print(f"  4. Trocar Tipo Conta (Sessão)")
         print(f"  5. Trocar Mercado (Sessão)")
         print(f"  6. Detalhes da Conta")
         print(f"  7. Configurar Payout Mínimo (Atual: {payout_minimo}%)")
+        print(f"  8. Configurar Timeframe (Atual: {timeframe_padrao} min)")
+        
+        # Opções LSTM - Somente se disponível
+        if LSTM_DISPONIVEL:
+            print(f"\n[ Recursos LSTM ]")
+            print(f"  9. Treinar Modelo LSTM")
+            print(f"  10. Operação Automática com LSTM")
+            print(f"  11. Análise de Predição LSTM")
+            print(f"  12. Configurações LSTM")
+            
         print("  0. Deslogar")
         
         escolha = input("\n  Escolha: ").strip()
@@ -494,12 +519,8 @@ def menu_principal(iq_session, conta_id, tipo_conta_foco, mercado_foco):
             
         elif escolha == "2":
             # Listar ativos e seus payouts
-            exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo)
-            press_enter_to_continue()
-            
-        elif escolha == "3":
-            # Analisar ativos
-            analisar_ativos_operacao(iq_session, mercado_foco, payout_minimo)
+            ativos = exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo, timeframe_padrao)
+            # Não é necessário fazer nada com os ativos aqui, só exibir
             press_enter_to_continue()
             
         elif escolha == "4":
@@ -554,6 +575,54 @@ def menu_principal(iq_session, conta_id, tipo_conta_foco, mercado_foco):
                 
             press_enter_to_continue()
             
+        elif escolha == "8":
+            # Configurar timeframe
+            print("\n" + "=" * 60)
+            print("# CONFIGURAÇÃO DE TIMEFRAME #".center(60))
+            print("=" * 60)
+            print(f"  Timeframe atual: {timeframe_padrao} minutos")
+            print("  Opções disponíveis:")
+            print("  1 - 1 minuto (M1)")
+            print("  5 - 5 minutos (M5)")
+            print("  15 - 15 minutos (M15)")
+            print("  30 - 30 minutos (M30)")
+            print("  60 - 1 hora (H1)")
+            print("  240 - 4 horas (H4)")
+            
+            try:
+                novo_timeframe = int(input("\n  Novo timeframe (1, 5, 15, 30, 60, 240): ").strip())
+                timeframes_validos = [1, 5, 15, 30, 60, 240]
+                if novo_timeframe in timeframes_validos:
+                    timeframe_padrao = novo_timeframe
+                    print(f"\n  ✅ Timeframe configurado para {timeframe_padrao} minutos")
+                else:
+                    print("\n  ❌ Valor inválido. Escolha entre: 1, 5, 15, 30, 60 ou 240.")
+            except ValueError:
+                print("\n  ❌ Valor inválido. Digite apenas números.")
+                
+            press_enter_to_continue()
+            
+        # Opções LSTM - Somente se disponível
+        elif LSTM_DISPONIVEL and escolha == "9":
+            # Treinar modelo LSTM
+            menu_treinar_modelo_lstm(iq_session, mercado_foco)
+            press_enter_to_continue()
+            
+        elif LSTM_DISPONIVEL and escolha == "10":
+            # Operação automática com LSTM
+            menu_operacao_automatica_lstm(iq_session, mercado_foco)
+            press_enter_to_continue()
+            
+        elif LSTM_DISPONIVEL and escolha == "11":
+            # Análise de predição LSTM
+            menu_analise_predicao_lstm(iq_session, mercado_foco)
+            press_enter_to_continue()
+            
+        elif LSTM_DISPONIVEL and escolha == "12":
+            # Configurações LSTM
+            menu_configuracoes_lstm()
+            press_enter_to_continue()
+            
         elif escolha == "0":
             # Sair
             return False, tipo_conta_foco, mercado_foco
@@ -600,69 +669,520 @@ def exibir_detalhes_conta(info_api, saldos_db, perfil_local=None):
     else:
         print("  Dados do perfil IQ Option ainda não sincronizados localmente.")
 
-def analisar_ativos_operacao(iq_session, mercado_foco, payout_minimo=85):
-    """
-    Interface para análise de ativos para operação
+# --- Funções de Menu LSTM --- #
+def menu_treinar_modelo_lstm(iq_session, mercado_foco):
+    """Interface para treinar modelo LSTM"""
+    global timeframe_padrao, payout_minimo
     
-    Args:
-        iq_session: Sessão IQ Option conectada
-        mercado_foco: Mercado atual em foco
-        payout_minimo: Payout mínimo para considerar ativos (%)
-    """
-    print("\n" + "=" * 60)
-    print(f"# ANÁLISE DE ATIVOS - {mercado_foco} #".center(60))
-    print("=" * 60)
-    print(f"  Analisando ativos para identificar os melhores candidatos para operação...")
-    print(f"  Este processo pode levar alguns minutos, dependendo da quantidade de ativos e dados disponíveis.")
-    print("=" * 60)
+    print_header("Treinamento de Modelo LSTM")
     
-    # Progresso formatado
-    def atualizar_progresso(percentual, mensagem=""):
-        progresso = "█" * int(percentual / 2) + "░" * (50 - int(percentual / 2))
-        print(f"\r[{progresso}] {percentual:.1f}% {mensagem}", end="", flush=True)
-        if percentual >= 100:
-            print()  # Nova linha
+    # Verifica se existem modelos já treinados
+    diretorio_modelos = "modelos"
+    if not os.path.exists(diretorio_modelos):
+        os.makedirs(diretorio_modelos)
+        print("  Diretório de modelos criado.")
     
-    # Verifica se tem ativos disponíveis
-    ativos_com_payout = listar_ativos_abertos_com_payout(iq_session.api, mercado_foco)
-    if not ativos_com_payout:
-        print(f"\n[ERRO] Nenhum ativo disponível para o mercado {mercado_foco}")
-        return None
+    modelos_existentes = [f for f in os.listdir(diretorio_modelos) if f.endswith('.keras')]
     
-    print(f"\n[INFO] Verificando {len(ativos_com_payout)} ativos disponíveis para análise...")
+    print(f"  Mercado: {mercado_foco}")
+    print(f"  Modelos existentes: {len(modelos_existentes)}")
     
-    # Importamos aqui para evitar dependência cíclica
-    from iqoption.analisador_ativos import interface_analise_ativos
+    # Lista os ativos disponíveis para treinar usando a mesma função do menu principal
+    ativos = exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo, timeframe_padrao)
     
-    # Executa análise
-    df_metricas, caminho_html = interface_analise_ativos(
-        iq_session.api, 
-        mercado_foco, 
-        atualizar_progresso,
-        payout_minimo
-    )
+    if not ativos:
+        print_error(f"Nenhum ativo disponível para {mercado_foco} com payout mínimo de {payout_minimo}%")
+        return
     
-    if df_metricas is not None and not df_metricas.empty:
-        print("\n[INFO] Análise concluída com sucesso!")
-        print(f"Total de ativos analisados: {len(df_metricas)}")
-        print(f"Payout mínimo considerado: {payout_minimo}%")
+    # Configurações de paginação
+    itens_por_pagina = 10
+    total_paginas = (len(ativos) + itens_por_pagina - 1) // itens_por_pagina
+    pagina_atual = 1
+    
+    while True:
+        inicio = (pagina_atual - 1) * itens_por_pagina
+        fim = min(inicio + itens_por_pagina, len(ativos))
         
-        # Mostra top 5 ativos
-        print("\nTop 5 ativos recomendados:")
-        print("-" * 60)
-        print(f"{'Ativo':<15} {'Payout':<10} {'Volatilidade':<15} {'Tendência':<15} {'Pontuação':<10}")
-        print("-" * 60)
+        # Selecionar o ativo para treinar
+        print(f"\n  Selecione o ativo para treinar o modelo (Página {pagina_atual}/{total_paginas}):")
         
-        for i, (ativo, row) in enumerate(df_metricas.head(5).iterrows(), 1):
-            print(f"{ativo:<15} {row['payout']*100:<10.0f}% {row.get('volatilidade_nome', 'N/A'):<15} {row.get('tendencia_nome', 'N/A'):<15} {row['pontuacao']:<10.2f}")
+        # Exibir os ativos da página atual
+        for i, (ativo, payout) in enumerate(ativos[inicio:fim], inicio + 1):
+            print(f"    {i}. {ativo} (Payout: {payout if payout is not None else 'N/A'}%)")
         
-        print("-" * 60)
+        # Opções de navegação
+        print("\n  Navegação:")
+        if pagina_atual > 1:
+            print("    A. Página anterior")
+        if pagina_atual < total_paginas:
+            print("    P. Próxima página")
+        print("    0. Voltar ao menu principal")
         
-        # Informa sobre o relatório HTML
-        if caminho_html:
-            print(f"\n[INFO] Relatório HTML detalhado salvo em: {caminho_html}")
+        # Obter escolha do usuário
+        escolha = input("\n  Escolha (número ou letra): ").strip().upper()
+        
+        # Verificar se é para voltar ao menu principal
+        if escolha == "0":
+            return
+        
+        # Verificar se é para navegar entre páginas
+        if escolha == "A" and pagina_atual > 1:
+            pagina_atual -= 1
+            continue
+        if escolha == "P" and pagina_atual < total_paginas:
+            pagina_atual += 1
+            continue
+            
+        # Verificar se é um número válido
+        try:
+            opcao = int(escolha)
+            if 1 <= opcao <= len(ativos):
+                ativo_selecionado = ativos[opcao-1][0]
+                print(f"\n  ✅ Ativo selecionado: {ativo_selecionado}")
+                
+                # Confirmar treinamento
+                print("\n  O treinamento pode levar vários minutos dependendo da quantidade de dados.")
+                print("  Dica: Para melhor qualidade, use pelo menos 1000 velas históricas.")
+                
+                confirma = input("\n  Iniciar treinamento? (S/N): ").strip().upper()
+                if confirma == "S":
+                    print("\n  Iniciando treinamento do modelo LSTM...")
+                    caminho_modelo = treinar_modelo(iq_session.api, ativo_selecionado, timeframe_padrao)
+                    print(f"\n  ✅ Modelo treinado com sucesso: {caminho_modelo}")
+                    return  # Retorna ao menu principal após o treinamento
+                else:
+                    print("\n  Treinamento cancelado.")
+                    return  # Retorna ao menu principal
+            else:
+                print_error(f"Opção inválida. Digite um número entre 1 e {len(ativos)}.")
+        except ValueError:
+            print_error("Entrada inválida. Digite um número ou uma letra de navegação válida.")
+
+def menu_operacao_automatica_lstm(iq_session, mercado_foco):
+    """Interface para operação automática com LSTM"""
+    global timeframe_padrao, payout_minimo
+    
+    print_header("Operação Automática LSTM")
+    
+    # Verificar se existem modelos treinados
+    diretorio_modelos = "modelos"
+    
+    if not os.path.exists(diretorio_modelos):
+        os.makedirs(diretorio_modelos)
+    
+    modelos_existentes = [f for f in os.listdir(diretorio_modelos) if f.endswith('.keras')]
+    
+    if not modelos_existentes:
+        print_error("Nenhum modelo treinado encontrado. Treine um modelo primeiro.")
+        return
+    
+    # Listar modelos disponíveis
+    print("  Modelos disponíveis:")
+    for i, modelo in enumerate(modelos_existentes, 1):
+        print(f"    {i}. {modelo}")
+    
+    # Selecionar modelo
+    try:
+        opcao_modelo = int(input("\n  Selecione o modelo (número): "))
+        if 1 <= opcao_modelo <= len(modelos_existentes):
+            modelo_selecionado = os.path.join(diretorio_modelos, modelos_existentes[opcao_modelo-1])
+            print(f"\n  ✅ Modelo selecionado: {modelos_existentes[opcao_modelo-1]}")
+        else:
+            print_error("Opção inválida.")
+            return
+    except ValueError:
+        print_error("Entrada inválida. Digite um número.")
+        return
+    
+    # Lista os ativos disponíveis para operar usando a mesma função do menu principal
+    ativos = exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo, timeframe_padrao)
+    
+    if not ativos:
+        print_error(f"Nenhum ativo disponível para {mercado_foco} com payout mínimo de {payout_minimo}%")
+        return
+    
+    # Configurações de paginação
+    itens_por_pagina = 10
+    total_paginas = (len(ativos) + itens_por_pagina - 1) // itens_por_pagina
+    pagina_atual = 1
+    
+    while True:
+        inicio = (pagina_atual - 1) * itens_por_pagina
+        fim = min(inicio + itens_por_pagina, len(ativos))
+        
+        # Exibir os ativos da página atual
+        print(f"\n  Selecione o ativo para operar (Página {pagina_atual}/{total_paginas}):")
+        for i, (ativo, payout) in enumerate(ativos[inicio:fim], inicio + 1):
+            print(f"    {i}. {ativo} (Payout: {payout if payout is not None else 'N/A'}%)")
+        
+        # Opções de navegação
+        print("\n  Navegação:")
+        if pagina_atual > 1:
+            print("    A. Página anterior")
+        if pagina_atual < total_paginas:
+            print("    P. Próxima página")
+        print("    0. Voltar ao menu principal")
+        
+        # Obter escolha do usuário
+        escolha = input("\n  Escolha (número ou letra): ").strip().upper()
+        
+        # Verificar se é para voltar ao menu principal
+        if escolha == "0":
+            return
+        
+        # Verificar se é para navegar entre páginas
+        if escolha == "A" and pagina_atual > 1:
+            pagina_atual -= 1
+            continue
+        if escolha == "P" and pagina_atual < total_paginas:
+            pagina_atual += 1
+            continue
+            
+        # Verificar se é um número válido
+        try:
+            opcao = int(escolha)
+            if 1 <= opcao <= len(ativos):
+                ativo_selecionado = ativos[opcao-1][0]
+                print(f"\n  ✅ Ativo selecionado: {ativo_selecionado}")
+                
+                # Perguntar o valor para entrada
+                try:
+                    valor_entrada = float(input("\n  Valor da entrada: $"))
+                    if valor_entrada <= 0:
+                        print_error("O valor deve ser maior que zero.")
+                        continue
+                except ValueError:
+                    print_error("Entrada inválida. Digite um número válido.")
+                    continue
+                
+                # Perguntar quantas operações realizar
+                try:
+                    quantidade_operacoes = int(input("\n  Quantidade de operações (1-100): "))
+                    if not 1 <= quantidade_operacoes <= 100:
+                        print_error("A quantidade deve estar entre 1 e 100.")
+                        continue
+                except ValueError:
+                    print_error("Entrada inválida. Digite um número inteiro.")
+                    continue
+                
+                # Confirmar início das operações
+                print("\n\n  ⚠️ ATENÇÃO: Você está prestes a iniciar operações reais.")
+                print(f"  Serão executadas até {quantidade_operacoes} operações de ${valor_entrada} no ativo {ativo_selecionado}.")
+                
+                confirmacao = input("\n  Confirma o início das operações? (S/N): ").strip().upper()
+                if confirmacao != 'S':
+                    print("\n  Operações canceladas pelo usuário.")
+                    return
+                
+                # Executar operações
+                print("\n  Iniciando operações automáticas...")
+                print("  Pressione Ctrl+C a qualquer momento para interromper.\n")
+                
+                try:
+                    resultado = executar_operacoes_lstm(
+                        iq_session.api, 
+                        modelo_selecionado, 
+                        ativo_selecionado, 
+                        valor_entrada, 
+                        quantidade_operacoes
+                    )
+                    
+                    # Verificar se tivemos erro
+                    if isinstance(resultado, dict) and resultado.get('erro', False):
+                        print_error(f"{resultado.get('mensagem', 'Erro ao executar operações automáticas.')}")
+                        
+                        # Orientações adicionais baseadas no tipo de erro
+                        tipo_erro = resultado.get('tipo_erro')
+                        if tipo_erro == 'arquivo_nao_encontrado':
+                            print("  Você precisa treinar um modelo LSTM primeiro antes de fazer operações.")
+                            print("  Use a opção 'Treinar Modelo LSTM' no menu principal.")
+                        elif tipo_erro == 'modelo_corrompido':
+                            print("  O arquivo de modelo parece estar corrompido ou em formato inválido.")
+                            print("  Sugestão: Tente treinar novamente o modelo com a opção 'Treinar Modelo LSTM'.")
+                            print("  Se o problema persistir, verifique se há erros durante o treinamento.")
+                    else:
+                        # Mostrar resumo das operações
+                        print("\n  Resumo das operações:")
+                        print(f"  - Total de operações: {resultado.get('total_operacoes', 0)}")
+                        print(f"  - Ganhos: {resultado.get('wins', 0)}")
+                        print(f"  - Perdas: {resultado.get('losses', 0)}")
+                        print(f"  - Empates: {resultado.get('ties', 0)}")
+                        
+                        # Calcular taxa de acerto
+                        if resultado.get('total_operacoes', 0) > 0:
+                            taxa_acerto = (resultado.get('wins', 0) / resultado.get('total_operacoes', 0)) * 100
+                            print(f"  - Taxa de acerto: {taxa_acerto:.2f}%")
+                        
+                        print("\n  ✅ Operações automáticas concluídas!")
+                    
+                except KeyboardInterrupt:
+                    print("\n\n  ⚠️ Operações interrompidas pelo usuário.")
+                except Exception as e:
+                    logging.error(f"Erro durante operações automáticas: {str(e)}")
+                    print_error(f"Erro durante operações automáticas: {str(e)}")
+                
+                # Aguardar confirmação para voltar ao menu
+                input("\n  Pressione Enter para voltar ao menu principal...")
+                return
+            else:
+                print_error(f"Opção inválida. Digite um número entre 1 e {len(ativos)}.")
+        except ValueError:
+            print_error("Entrada inválida. Digite um número ou uma letra de navegação válida.")
+
+def menu_analise_predicao_lstm(iq_session, mercado_foco):
+    """Interface para análise de predição com LSTM"""
+    global timeframe_padrao, payout_minimo
+    
+    print_header("Análise de Predição LSTM")
+    
+    # Verificar se existem modelos treinados
+    diretorio_modelos = "modelos"
+    modelos_existentes = [f for f in os.listdir(diretorio_modelos) if f.endswith('.keras')]
+    
+    if not modelos_existentes:
+        print_error("Nenhum modelo treinado encontrado. Treine um modelo primeiro.")
+        return
+    
+    # Listar modelos disponíveis
+    print("  Modelos disponíveis:")
+    for i, modelo in enumerate(modelos_existentes, 1):
+        print(f"    {i}. {modelo}")
+    
+    # Selecionar modelo
+    try:
+        opcao_modelo = int(input("\n  Selecione o modelo (número): "))
+        if 1 <= opcao_modelo <= len(modelos_existentes):
+            modelo_selecionado = os.path.join(diretorio_modelos, modelos_existentes[opcao_modelo-1])
+            print(f"\n  ✅ Modelo selecionado: {modelos_existentes[opcao_modelo-1]}")
+        else:
+            print_error("Opção inválida.")
+            return
+    except ValueError:
+        print_error("Entrada inválida. Digite um número.")
+        return
+    
+    # Lista os ativos disponíveis para análise usando a mesma função do menu principal
+    ativos = exibir_ativos_abertos(iq_session, mercado_foco, payout_minimo, timeframe_padrao)
+    
+    if not ativos:
+        print_error(f"Nenhum ativo disponível para {mercado_foco} com payout mínimo de {payout_minimo}%")
+        return
+    
+    # Configurações de paginação
+    itens_por_pagina = 10
+    total_paginas = (len(ativos) + itens_por_pagina - 1) // itens_por_pagina
+    pagina_atual = 1
+    
+    while True:
+        inicio = (pagina_atual - 1) * itens_por_pagina
+        fim = min(inicio + itens_por_pagina, len(ativos))
+        
+        # Exibir os ativos da página atual
+        print(f"\n  Selecione o ativo para análise (Página {pagina_atual}/{total_paginas}):")
+        for i, (ativo, payout) in enumerate(ativos[inicio:fim], inicio + 1):
+            print(f"    {i}. {ativo} (Payout: {payout if payout is not None else 'N/A'}%)")
+        
+        # Opções de navegação
+        print("\n  Navegação:")
+        if pagina_atual > 1:
+            print("    A. Página anterior")
+        if pagina_atual < total_paginas:
+            print("    P. Próxima página")
+        print("    0. Voltar ao menu principal")
+        
+        # Obter escolha do usuário
+        escolha = input("\n  Escolha (número ou letra): ").strip().upper()
+        
+        # Verificar se é para voltar ao menu principal
+        if escolha == "0":
+            return
+        
+        # Verificar se é para navegar entre páginas
+        if escolha == "A" and pagina_atual > 1:
+            pagina_atual -= 1
+            continue
+        if escolha == "P" and pagina_atual < total_paginas:
+            pagina_atual += 1
+            continue
+            
+        # Verificar se é um número válido
+        try:
+            opcao = int(escolha)
+            if 1 <= opcao <= len(ativos):
+                ativo_selecionado = ativos[opcao-1][0]
+                print(f"\n  ✅ Ativo selecionado: {ativo_selecionado}")
+                
+                # Executar análise
+                print("\n  Analisando dados e gerando predição...")
+                resultado = analisar_ativo_lstm(iq_session.api, modelo_selecionado, ativo_selecionado)
+                
+                # Verificar se tivemos erro
+                if resultado is None:
+                    print_error("Falha na análise. Verifique os logs para mais detalhes.")
+                    continue
+                
+                # Mostrar resultados
+                if resultado.get('erro', False):
+                    print_error(f"{resultado.get('mensagem', 'Erro na análise do ativo.')}")
+                    
+                    # Orientações adicionais baseadas no tipo de erro
+                    tipo_erro = resultado.get('tipo_erro')
+                    if tipo_erro == 'arquivo_nao_encontrado':
+                        print("  Você precisa treinar um modelo LSTM primeiro antes de fazer análises.")
+                        print("  Use a opção 'Treinar Modelo LSTM' no menu principal.")
+                    elif tipo_erro == 'modelo_corrompido':
+                        print("  O arquivo de modelo parece estar corrompido ou em formato inválido.")
+                        print("  Sugestão: Tente treinar novamente o modelo com a opção 'Treinar Modelo LSTM'.")
+                        print("  Se o problema persistir, verifique se há erros durante o treinamento.")
+                else:
+                    direcao = "ALTA (CALL)" if resultado['direcao'] == 'call' else "BAIXA (PUT)"
+                    confianca = resultado['confianca']
+                    
+                    print("\n  Resultado da análise:")
+                    print(f"  - Ativo: {ativo_selecionado}")
+                    print(f"  - Previsão: {direcao}")
+                    print(f"  - Confiança: {confianca:.2f}%")
+                    print(f"  - Modelo utilizado: {resultado.get('modelo', 'N/A')}")
+                    
+                    # Mostrar indicadores técnicos adicionais
+                    if 'indicadores' in resultado and resultado['indicadores']:
+                        print("\n  Indicadores técnicos:")
+                        for nome, valor in resultado['indicadores'].items():
+                            print(f"  - {nome}: {valor}")
+                    else:
+                        print("\n  Não foi possível calcular indicadores técnicos adicionais.")
+                
+                # Perguntar se deseja analisar outro ativo
+                continuar = input("\n  Analisar outro ativo? (S/N): ").strip().upper()
+                if continuar != 'S':
+                    return
+                break  # Sai do loop atual para reiniciar a seleção de ativo
+            else:
+                print_error(f"Opção inválida. Digite um número entre 1 e {len(ativos)}.")
+        except ValueError:
+            print_error("Entrada inválida. Digite um número ou uma letra de navegação válida.")
+
+def menu_configuracoes_lstm():
+    """Interface para configurar parâmetros LSTM"""
+    print_header("Configurações LSTM")
+    
+    # Definir caminhos dos arquivos de configuração
+    config_dir = "configuracoes"
+    if not os.path.exists(config_dir):
+        os.makedirs(config_dir)
+    
+    config_path = os.path.join(config_dir, "lstm_config.ini")
+    
+    # Configurações padrão
+    config_padrao = {
+        'seq_len': 5,
+        'future_predict': 2,
+        'batch_size': 16,
+        'epochs': 40,
+        'learning_rate': 0.001
+    }
+    
+    # Carregar configurações atuais ou usar padrão
+    import configparser
+    config = configparser.ConfigParser()
+    
+    if os.path.exists(config_path):
+        config.read(config_path)
+        if 'LSTM' not in config:
+            config['LSTM'] = {}
+        
+        current_config = {
+            'seq_len': config['LSTM'].getint('seq_len', config_padrao['seq_len']),
+            'future_predict': config['LSTM'].getint('future_predict', config_padrao['future_predict']),
+            'batch_size': config['LSTM'].getint('batch_size', config_padrao['batch_size']),
+            'epochs': config['LSTM'].getint('epochs', config_padrao['epochs']),
+            'learning_rate': config['LSTM'].getfloat('learning_rate', config_padrao['learning_rate'])
+        }
     else:
-        print("\n[ERRO] A análise não retornou resultados válidos.")
+        current_config = config_padrao
+        config['LSTM'] = {}
+    
+    # Mostrar configurações atuais
+    print("  Configurações atuais:")
+    print(f"  1. Tamanho da sequência (SEQ_LEN): {current_config['seq_len']}")
+    print(f"  2. Períodos futuros para previsão: {current_config['future_predict']}")
+    print(f"  3. Tamanho do lote (BATCH_SIZE): {current_config['batch_size']}")
+    print(f"  4. Épocas de treinamento: {current_config['epochs']}")
+    print(f"  5. Taxa de aprendizado: {current_config['learning_rate']}")
+    print("  0. Salvar e voltar")
+    
+    # Menu para alteração de parâmetros
+    while True:
+        opcao = input("\n  Escolha o parâmetro para alterar (0-5): ").strip()
+        
+        if opcao == "0":
+            # Salvar configurações
+            for key, value in current_config.items():
+                config['LSTM'][key] = str(value)
+            
+            with open(config_path, 'w') as configfile:
+                config.write(configfile)
+            
+            print_success("Configurações salvas com sucesso!")
+            break
+        
+        elif opcao == "1":
+            try:
+                valor = int(input(f"  Novo valor para SEQ_LEN (atual: {current_config['seq_len']}): "))
+                if valor > 0:
+                    current_config['seq_len'] = valor
+                    print(f"  ✅ SEQ_LEN alterado para {valor}")
+                else:
+                    print_error("Valor deve ser maior que zero.")
+            except ValueError:
+                print_error("Entrada inválida. Digite um número inteiro.")
+        
+        elif opcao == "2":
+            try:
+                valor = int(input(f"  Novo valor para previsão futura (atual: {current_config['future_predict']}): "))
+                if valor > 0:
+                    current_config['future_predict'] = valor
+                    print(f"  ✅ Períodos futuros alterado para {valor}")
+                else:
+                    print_error("Valor deve ser maior que zero.")
+            except ValueError:
+                print_error("Entrada inválida. Digite um número inteiro.")
+        
+        elif opcao == "3":
+            try:
+                valor = int(input(f"  Novo valor para BATCH_SIZE (atual: {current_config['batch_size']}): "))
+                if valor > 0:
+                    current_config['batch_size'] = valor
+                    print(f"  ✅ BATCH_SIZE alterado para {valor}")
+                else:
+                    print_error("Valor deve ser maior que zero.")
+            except ValueError:
+                print_error("Entrada inválida. Digite um número inteiro.")
+        
+        elif opcao == "4":
+            try:
+                valor = int(input(f"  Novo valor para épocas (atual: {current_config['epochs']}): "))
+                if valor > 0:
+                    current_config['epochs'] = valor
+                    print(f"  ✅ Épocas alterado para {valor}")
+                else:
+                    print_error("Valor deve ser maior que zero.")
+            except ValueError:
+                print_error("Entrada inválida. Digite um número inteiro.")
+        
+        elif opcao == "5":
+            try:
+                valor = float(input(f"  Novo valor para taxa de aprendizado (atual: {current_config['learning_rate']}): "))
+                if valor > 0:
+                    current_config['learning_rate'] = valor
+                    print(f"  ✅ Taxa de aprendizado alterado para {valor}")
+                else:
+                    print_error("Valor deve ser maior que zero.")
+            except ValueError:
+                print_error("Entrada inválida. Digite um número decimal.")
+        
+        else:
+            print_error("Opção inválida.")
 
 def main():
     """Função principal da aplicação"""

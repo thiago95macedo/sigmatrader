@@ -1,16 +1,9 @@
 """
-Pacote de integração com a plataforma IQ Option
+SigmaTrader - Módulo IQ Option
+Funções e classes para interação com a API da IQ Option
 """
 
 from .login import LoginIQOption
-# from .ativos import listar_ativos_abertos # Comentado/Removido
-from .ativos import listar_ativos_abertos_com_payout # Adicionado
+from .ativos import listar_ativos_abertos_com_payout
 
-# Versão do pacote
-__version__ = "2025.1.0.2"
-
-__all__ = [
-    "LoginIQOption",
-    # "listar_ativos_abertos", # Comentado/Removido
-    "listar_ativos_abertos_com_payout", # Adicionado
-] 
+__all__ = ['LoginIQOption', 'listar_ativos_abertos_com_payout'] 
